@@ -1,0 +1,10 @@
+{
+  "description": "A civic accountability hub for Indian citizens to anonymously report local issues, validate community concerns, track resolutions, and access RTI and legal resources.",
+  "robots": {
+    "index": false
+  },
+  "accessibility": {
+    "addBypassLinks": false,
+    "ignoreReducedMotion": false
+  }
+}

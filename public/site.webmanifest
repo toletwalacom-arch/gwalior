@@ -1,0 +1,20 @@
+{
+  "id": "/",
+  "name": "GwaliorWale",
+  "short_name": "GwaliorWale",
+  "description": "The digital home of Gwalior. Connect with people, discover the city and grow with your local community.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#ffffff",
+  "theme_color": "#142b49",
+  "icons": [
+    {
+      "src": "/app-icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
