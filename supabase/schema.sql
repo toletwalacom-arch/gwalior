@@ -902,6 +902,33 @@ as $$
   order by c.created_at asc;
 $$;
 
+create or replace function public.get_post_likers(
+  p_post_id uuid,
+  p_limit integer default 50,
+  p_offset integer default 0
+)
+returns table (
+  id uuid,
+  full_name text,
+  username text,
+  avatar_url text,
+  liked_at timestamptz
+)
+language sql
+stable
+security definer
+set search_path = public, pg_temp
+as $$
+  select pr.id, pr.full_name, pr.username, pr.avatar_url, pl.created_at
+  from public.post_likes pl
+  join public.profiles pr on pr.id = pl.user_id
+  where pl.post_id = p_post_id
+    and auth.uid() is not null
+  order by pl.created_at desc, pr.id
+  limit greatest(1, least(coalesce(p_limit, 50), 100))
+  offset greatest(coalesce(p_offset, 0), 0);
+$$;
+
 alter table public.post_likes enable row level security;
 alter table public.comments enable row level security;
 alter table public.comment_likes enable row level security;
@@ -958,6 +985,7 @@ revoke all on function public.get_popular_community_groups(integer) from public,
 revoke all on function public.create_community_group(text, text, text[]) from public, anon;
 revoke all on function public.get_trending_topics(text, text, integer) from public, anon;
 revoke all on function public.get_post_comments(uuid) from public, anon;
+revoke all on function public.get_post_likers(uuid, integer, integer) from public, anon;
 grant execute on function public.get_community_posts() to authenticated;
 grant execute on function public.get_personalized_community_posts(text, integer, integer) to authenticated;
 grant execute on function public.get_recommended_community_groups(integer) to authenticated;
@@ -965,6 +993,7 @@ grant execute on function public.get_popular_community_groups(integer) to anon, 
 grant execute on function public.create_community_group(text, text, text[]) to authenticated;
 grant execute on function public.get_trending_topics(text, text, integer) to authenticated;
 grant execute on function public.get_post_comments(uuid) to authenticated;
+grant execute on function public.get_post_likers(uuid, integer, integer) to authenticated;
 
 create or replace function public.create_profile_for_auth_user()
 returns trigger
@@ -1671,8 +1700,10 @@ create table if not exists public.job_listings (
   description text not null check (char_length(btrim(description)) between 20 and 5000),
   requirements text not null default '' check (char_length(requirements) <= 3000),
   status text not null default 'active' check (status in ('active', 'closed')),
-  created_at timestamptz not null default now()
+  created_at timestamptz not null default now(),
+  expires_at timestamptz
 );
+alter table public.job_listings add column if not exists expires_at timestamptz;
 
 create index if not exists job_listings_active_created_idx
   on public.job_listings (created_at desc)
@@ -1685,20 +1716,103 @@ drop policy if exists "Anyone can browse active job listings" on public.job_list
 create policy "Anyone can browse active job listings"
   on public.job_listings for select
   to anon, authenticated
-  using (status = 'active' or auth.uid() = owner_id);
+  using (
+    (status = 'active' and (expires_at is null or expires_at > now()))
+    or auth.uid() = owner_id
+  );
 drop policy if exists "Signed-in users can create their own job listings" on public.job_listings;
-create policy "Signed-in users can create their own job listings"
-  on public.job_listings for insert
-  to authenticated
-  with check (auth.uid() = owner_id and status = 'active');
+revoke insert on public.job_listings from anon, authenticated;
 drop policy if exists "Owners can update their own job listings" on public.job_listings;
 create policy "Owners can update their own job listings"
   on public.job_listings for update
   to authenticated
   using (auth.uid() = owner_id)
-  with check (auth.uid() = owner_id);
+  with check (
+    auth.uid() = owner_id
+    and (status = 'closed' or expires_at is null or expires_at > now())
+  );
+revoke insert, update on public.job_listings from public, anon, authenticated;
 grant select on public.job_listings to anon, authenticated;
-grant insert, update on public.job_listings to authenticated;
+grant insert on public.job_listings to service_role;
+grant update (status) on public.job_listings to authenticated;
+
+create table if not exists public.job_payment_orders (
+  order_id text primary key,
+  user_id uuid not null references public.profiles (id) on delete cascade,
+  title text not null,
+  company text not null,
+  location text not null,
+  employment_type text not null
+    check (employment_type in ('Full-time', 'Part-time', 'Contract', 'Internship', 'Freelance')),
+  workplace_type text not null
+    check (workplace_type in ('On-site', 'Hybrid', 'Remote')),
+  salary text not null default '',
+  description text not null,
+  requirements text not null default '',
+  days integer not null check (days between 1 and 365),
+  amount_paise integer not null check (amount_paise = days * 1000),
+  status text not null default 'pending' check (status in ('pending', 'paid')),
+  payment_id text unique,
+  job_id uuid references public.job_listings (id) on delete set null,
+  created_at timestamptz not null default now(),
+  paid_at timestamptz
+);
+
+alter table public.job_payment_orders enable row level security;
+revoke all on public.job_payment_orders from public, anon, authenticated;
+grant select, insert, update on public.job_payment_orders to service_role;
+
+create or replace function public.complete_job_payment(p_order_id text, p_payment_id text)
+returns uuid
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  payment_row public.job_payment_orders%rowtype;
+  new_job_id uuid;
+begin
+  if auth.role() <> 'service_role' then
+    raise exception 'Only the payment service can complete job payments.';
+  end if;
+
+  select * into payment_row
+  from public.job_payment_orders
+  where order_id = p_order_id
+  for update;
+
+  if not found then
+    raise exception 'Payment order was not found.';
+  end if;
+
+  if payment_row.status = 'paid' then
+    if payment_row.payment_id <> p_payment_id or payment_row.job_id is null then
+      raise exception 'Payment order has already been completed.';
+    end if;
+    return payment_row.job_id;
+  end if;
+
+  insert into public.job_listings (
+    owner_id, title, company, location, employment_type, workplace_type,
+    salary, description, requirements, status, expires_at
+  ) values (
+    payment_row.user_id, payment_row.title, payment_row.company, payment_row.location,
+    payment_row.employment_type, payment_row.workplace_type, payment_row.salary,
+    payment_row.description, payment_row.requirements, 'active',
+    now() + (payment_row.days || ' days')::interval
+  )
+  returning id into new_job_id;
+
+  update public.job_payment_orders
+  set status = 'paid', payment_id = p_payment_id, job_id = new_job_id, paid_at = now()
+  where order_id = p_order_id;
+
+  return new_job_id;
+end;
+$$;
+
+revoke all on function public.complete_job_payment(text, text) from public, anon, authenticated;
+grant execute on function public.complete_job_payment(text, text) to service_role;
 
 create table if not exists public.job_applications (
   id uuid primary key default gen_random_uuid(),
@@ -1741,6 +1855,7 @@ create policy "Signed-in users can apply to active jobs"
       from public.job_listings listing
       where listing.id = job_id
         and listing.status = 'active'
+        and (listing.expires_at is null or listing.expires_at > now())
         and listing.owner_id <> auth.uid()
     )
   );

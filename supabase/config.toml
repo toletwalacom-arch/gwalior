@@ -1,0 +1,7 @@
+project_id = "nmqkiezgfaumyryabiau"
+
+[functions.create-job-payment-order]
+verify_jwt = true
+
+[functions.verify-job-payment]
+verify_jwt = true

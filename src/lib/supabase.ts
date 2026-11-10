@@ -297,6 +297,14 @@ export type PostComment = {
   liked_by_me: boolean
 }
 
+export type PostLiker = {
+  id: string
+  full_name: string
+  username: string
+  avatar_url: string | null
+  liked_at: string
+}
+
 export type RecommendedCommunityGroup = {
   id: string
   name: string
@@ -492,6 +500,16 @@ export async function getPostComments(postId: string) {
   const { data, error } = await supabase.rpc("get_post_comments", { p_post_id: postId })
   if (error) throw error
   return data as PostComment[]
+}
+
+export async function getPostLikers(postId: string, limit = 50, offset = 0) {
+  const { data, error } = await supabase.rpc("get_post_likers", {
+    p_post_id: postId,
+    p_limit: limit,
+    p_offset: offset,
+  })
+  if (error) throw error
+  return data as PostLiker[]
 }
 
 export async function togglePostLike(postId: string, liked: boolean) {
@@ -779,6 +797,7 @@ export type JobListing = {
   requirements: string
   status: "active" | "closed"
   created_at: string
+  expires_at: string | null
 }
 
 export type JobApplication = {
@@ -793,7 +812,7 @@ export type JobApplication = {
 }
 
 const jobListingFields =
-  "id, owner_id, title, company, location, employment_type, workplace_type, salary, description, requirements, status, created_at"
+  "id, owner_id, title, company, location, employment_type, workplace_type, salary, description, requirements, status, created_at, expires_at"
 const jobApplicationFields =
   "id, job_id, applicant_id, applicant_name, applicant_email, applicant_phone, cover_letter, created_at"
 
@@ -829,7 +848,7 @@ export async function getMyJobListings() {
   return (data ?? []) as JobListing[]
 }
 
-export async function publishJob(payload: {
+type JobListingPayload = {
   title: string
   company: string
   location: string
@@ -838,26 +857,46 @@ export async function publishJob(payload: {
   salary: string
   description: string
   requirements: string
+}
+
+async function throwJobPaymentFunctionError(error: unknown): Promise<never> {
+  if (typeof error === "object" && error !== null && "context" in error && error.context instanceof Response) {
+    const body = await error.context.clone().json().catch(() => null) as { error?: unknown } | null
+    if (typeof body?.error === "string") throw new Error(body.error)
+  }
+  if (error instanceof Error) throw error
+  throw new Error("The job payment service is temporarily unavailable.")
+}
+
+export async function createJobPaymentOrder(payload: JobListingPayload, days: number) {
+  const { data, error } = await supabase.functions.invoke("create-job-payment-order", {
+    body: { job: payload, days },
+  })
+  if (error) await throwJobPaymentFunctionError(error)
+  if (!data || typeof data.order_id !== "string" || typeof data.key_id !== "string" || typeof data.amount !== "number") {
+    throw new Error("Could not start the job payment. Please try again.")
+  }
+  return {
+    orderId: data.order_id,
+    keyId: data.key_id,
+    amount: data.amount,
+    currency: typeof data.currency === "string" ? data.currency : "INR",
+  }
+}
+
+export async function verifyJobPayment(payment: {
+  order_id: string
+  payment_id: string
+  signature: string
 }) {
-  const user = await getCurrentUser()
-  if (!user) throw new Error("Log in to post a job.")
-  const { data, error } = await supabase
-    .from("job_listings")
-    .insert({
-      ...payload,
-      owner_id: user.id,
-      title: payload.title.trim(),
-      company: payload.company.trim(),
-      location: payload.location.trim(),
-      salary: payload.salary.trim(),
-      description: payload.description.trim(),
-      requirements: payload.requirements.trim(),
-      status: "active",
-    })
-    .select(jobListingFields)
-    .single()
-  if (error) throw error
-  return data as JobListing
+  const { data, error } = await supabase.functions.invoke("verify-job-payment", {
+    body: payment,
+  })
+  if (error) await throwJobPaymentFunctionError(error)
+  if (!data || typeof data.job_id !== "string") {
+    throw new Error("Payment was received, but the job could not be confirmed. Retry verification.")
+  }
+  return data.job_id
 }
 
 export async function updateJobStatus(id: string, status: JobListing["status"]) {

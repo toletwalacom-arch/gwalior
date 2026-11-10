@@ -2,8 +2,8 @@ import { FormEvent, useEffect, useRef, useState } from "react"
 import { createConversation, FollowListMember, getCachedOwnProfile, getJoinedCommunityGroups, getOwnProfile, getProfileFollowList, getPublicProfile, getPublicProfileByUsername, JoinedCommunityGroup, OwnProfile, signOutUser, supabase, updateOwnProfile, uploadProfileImage } from "./lib/supabase"
 import { INTEREST_CATEGORIES } from "./lib/interests"
 
-function go(path: string) {
-  window.history.pushState({}, "", path)
+function go(path: string, state: unknown = {}) {
+  window.history.pushState(state, "", path)
   window.dispatchEvent(new PopStateEvent("popstate"))
   window.scrollTo({ top: 0, behavior: "smooth" })
 }
@@ -191,6 +191,26 @@ function writeProfilePageCache(cache: ProfilePageCache) {
 
 function initials(name: string) {
   return name.split(/\s+/).map((part) => part[0]).join("").slice(0, 2).toUpperCase()
+}
+
+function postForDetail(post: UserPost, profile: Pick<OwnProfile, "id" | "full_name" | "username" | "avatar_url">) {
+  return {
+    id: post.id,
+    createdAt: post.created_at,
+    name: profile.full_name,
+    handle: `@${profile.username}`,
+    avatar: initials(profile.full_name),
+    avatarUrl: profile.avatar_url,
+    time: new Date(post.created_at).toLocaleDateString(),
+    category: post.category,
+    location: post.location,
+    text: post.content,
+    image: post.image_url ?? undefined,
+    likes: post.likes_count,
+    comments: post.comments_count,
+    userId: profile.id,
+    interestTags: post.interest_tags,
+  }
 }
 
 function formatJoinDate(date: string) {
@@ -581,7 +601,10 @@ export default function ProfilePage({ onLogout, profileSlug }: { onLogout?: () =
                     <button
                       key={post.id}
                       type="button"
-                      onClick={() => go(`/post/${post.id}`)}
+                      onClick={() => go(`/post/${post.id}?from=${encodeURIComponent(window.location.pathname)}`, {
+                        post: postForDetail(post, profile),
+                        feedPosts: posts.map((item) => postForDetail(item, profile)),
+                      })}
                       className="profile-grid-tile"
                       aria-label={`Open post: ${post.content.slice(0, 100)}`}
                     >
@@ -633,7 +656,10 @@ export default function ProfilePage({ onLogout, profileSlug }: { onLogout?: () =
                         <Icon name="heart" size={15} />
                         {post.likes_count} {post.likes_count === 1 ? "like" : "likes"}
                       </span>
-                      <button onClick={() => go(`/post/${post.id}`)} className="flex items-center gap-2 hover:text-blue-600">
+                      <button onClick={() => go(`/post/${post.id}?from=${encodeURIComponent(window.location.pathname)}`, {
+                        post: postForDetail(post, profile),
+                        feedPosts: posts.map((item) => postForDetail(item, profile)),
+                      })} className="flex items-center gap-2 hover:text-blue-600">
                         <Icon name="comment" size={15} />
                         {post.comments_count} {post.comments_count === 1 ? "comment" : "comments"}
                       </button>

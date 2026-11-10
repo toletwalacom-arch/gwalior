@@ -1,6 +1,7 @@
 import { FormEvent, useEffect, useMemo, useState } from "react"
 import {
   applyForJob,
+  createJobPaymentOrder,
   getCurrentUser,
   getJobApplications,
   getJobListing,
@@ -9,8 +10,8 @@ import {
   hasAppliedToJob,
   JobApplication,
   JobListing,
-  publishJob,
   updateJobStatus,
+  verifyJobPayment,
 } from "./lib/supabase"
 
 type JobsPageProps = { loggedIn: boolean }
@@ -38,6 +39,7 @@ const sampleJobs: JobListing[] = [
     requirements: "1+ year of social media experience, strong writing skills, and familiarity with Instagram and Facebook.",
     status: "active",
     created_at: "2026-11-08T09:00:00.000Z",
+    expires_at: null,
   },
   {
     id: "sample-mathematics-faculty",
@@ -52,6 +54,7 @@ const sampleJobs: JobListing[] = [
     requirements: "A degree in Mathematics or a related subject. Teaching or tutoring experience is preferred.",
     status: "active",
     created_at: "2026-11-07T09:00:00.000Z",
+    expires_at: null,
   },
   {
     id: "sample-junior-graphic-designer",
@@ -66,6 +69,7 @@ const sampleJobs: JobListing[] = [
     requirements: "A portfolio showcasing design fundamentals. Familiarity with Figma, Canva, or Adobe tools is a plus.",
     status: "active",
     created_at: "2026-11-06T09:00:00.000Z",
+    expires_at: null,
   },
   {
     id: "sample-content-community-intern",
@@ -80,6 +84,7 @@ const sampleJobs: JobListing[] = [
     requirements: "Curiosity about Gwalior, clear communication, and an interest in storytelling or digital media.",
     status: "active",
     created_at: "2026-11-05T09:00:00.000Z",
+    expires_at: null,
   },
 ]
 
@@ -107,6 +112,56 @@ function getErrorMessage(error: unknown, fallback: string) {
   return fallback
 }
 
+type RazorpayPaymentResponse = {
+  razorpay_order_id: string
+  razorpay_payment_id: string
+  razorpay_signature: string
+}
+
+type RazorpayCheckoutOptions = {
+  key: string
+  amount: number
+  currency: string
+  name: string
+  description: string
+  order_id: string
+  prefill: { email?: string }
+  theme: { color: string }
+  handler: (response: RazorpayPaymentResponse) => void
+  modal: { ondismiss: () => void }
+}
+
+type RazorpayCheckout = {
+  open: () => void
+  on: (event: "payment.failed", callback: (response: { error?: { description?: string } }) => void) => void
+}
+
+declare global {
+  interface Window {
+    Razorpay?: new (options: RazorpayCheckoutOptions) => RazorpayCheckout
+  }
+}
+
+let razorpayScriptPromise: Promise<void> | null = null
+
+function loadRazorpayCheckout() {
+  if (window.Razorpay) return Promise.resolve()
+  if (!razorpayScriptPromise) {
+    razorpayScriptPromise = new Promise((resolve, reject) => {
+      const script = document.createElement("script")
+      script.src = "https://checkout.razorpay.com/v1/checkout.js"
+      script.async = true
+      script.onload = () => resolve()
+      script.onerror = () => {
+        razorpayScriptPromise = null
+        reject(new Error("Could not load Razorpay checkout. Check your connection and try again."))
+      }
+      document.head.appendChild(script)
+    })
+  }
+  return razorpayScriptPromise
+}
+
 function BriefcaseIcon({ className = "" }: { className?: string }) {
   return (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" className={className}>
@@ -117,6 +172,7 @@ function BriefcaseIcon({ className = "" }: { className?: string }) {
 }
 
 function JobCard({ job, owner = false }: { job: JobListing; owner?: boolean }) {
+  const expired = Boolean(job.expires_at && Date.parse(job.expires_at) <= Date.now())
   return (
     <button
       type="button"
@@ -135,7 +191,7 @@ function JobCard({ job, owner = false }: { job: JobListing; owner?: boolean }) {
       </span>
       <span className="job-listing-end">
         {isSampleJob(job) && <span className="job-status sample">Sample</span>}
-        {owner && <span className={`job-status ${job.status}`}>{job.status === "active" ? "Accepting applications" : "Closed"}</span>}
+        {owner && <span className={`job-status ${expired ? "expired" : job.status}`}>{expired ? "Expired" : job.status === "active" ? "Accepting applications" : "Closed"}</span>}
         <span className="job-listing-date">{formatDate(job.created_at)}</span>
         <span className="job-listing-arrow" aria-hidden="true">→</span>
       </span>
@@ -306,6 +362,7 @@ export function JobsPage({ loggedIn }: JobsPageProps) {
 }
 
 function ManagedJob({ job, onUpdate }: { job: JobListing; onUpdate: (job: JobListing) => void }) {
+  const expired = Boolean(job.expires_at && Date.parse(job.expires_at) <= Date.now())
   const [open, setOpen] = useState(false)
   const [applications, setApplications] = useState<JobApplication[]>([])
   const [loading, setLoading] = useState(false)
@@ -347,7 +404,7 @@ function ManagedJob({ job, onUpdate }: { job: JobListing; onUpdate: (job: JobLis
       <JobCard job={job} owner />
       <div className="job-management-actions">
         <button type="button" onClick={() => void toggleApplications()}>{open ? "Hide applicants" : "View applicants"}</button>
-        <button type="button" disabled={saving} onClick={() => void toggleStatus()}>{saving ? "Saving…" : job.status === "active" ? "Close listing" : "Reopen listing"}</button>
+        <button type="button" disabled={saving || expired} onClick={() => void toggleStatus()}>{saving ? "Saving…" : expired ? "Expired" : job.status === "active" ? "Close listing" : "Reopen listing"}</button>
       </div>
       {error && <ErrorNote>{error}</ErrorNote>}
       {open && (loading ? <LoadingNote /> : applications.length ? (
@@ -516,10 +573,32 @@ export function JobDetail({ id, loggedIn }: { id: string; loggedIn: boolean }) {
 export function PostJobPage({ loggedIn }: JobsPageProps) {
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState("")
+  const [days, setDays] = useState(1)
+  const [pendingPayment, setPendingPayment] = useState<RazorpayPaymentResponse | null>(null)
 
   useEffect(() => {
     if (!loggedIn) go("/login?next=%2Fpost-job")
   }, [loggedIn])
+
+  async function confirmPayment(payment: RazorpayPaymentResponse) {
+    setSubmitting(true)
+    setError("")
+    try {
+      const jobId = await verifyJobPayment({
+        order_id: payment.razorpay_order_id,
+        payment_id: payment.razorpay_payment_id,
+        signature: payment.razorpay_signature,
+      })
+      setPendingPayment(null)
+      go(`/job/${jobId}`)
+    } catch (verificationError) {
+      console.error("Could not verify job payment:", verificationError)
+      setPendingPayment(payment)
+      setError("Payment may have gone through, but we couldn't confirm it yet. Retry verification below; don't pay again.")
+    } finally {
+      setSubmitting(false)
+    }
+  }
 
   async function submitJob(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -527,25 +606,54 @@ export function PostJobPage({ loggedIn }: JobsPageProps) {
       go("/login?next=%2Fpost-job")
       return
     }
-    const formData = new FormData(event.currentTarget)
+    if (pendingPayment) {
+      setError("Verify the previous payment before starting another job payment.")
+      return
+    }
+    const form = event.currentTarget
+    const formData = new FormData(form)
+    const selectedDays = Number(formData.get("days"))
+    if (!Number.isInteger(selectedDays) || selectedDays < 1 || selectedDays > 365) {
+      setError("Choose a listing duration from 1 to 365 days.")
+      return
+    }
+    const job = {
+      title: String(formData.get("title") ?? ""),
+      company: String(formData.get("company") ?? ""),
+      location: String(formData.get("location") ?? ""),
+      employment_type: employmentTypes.find((type) => type === formData.get("employment_type")) ?? "Full-time",
+      workplace_type: workplaceTypes.find((type) => type === formData.get("workplace_type")) ?? "On-site",
+      salary: String(formData.get("salary") ?? ""),
+      description: String(formData.get("description") ?? ""),
+      requirements: String(formData.get("requirements") ?? ""),
+    }
     setSubmitting(true)
     setError("")
     try {
-      const job = await publishJob({
-        title: String(formData.get("title") ?? ""),
-        company: String(formData.get("company") ?? ""),
-        location: String(formData.get("location") ?? ""),
-        employment_type: employmentTypes.find((type) => type === formData.get("employment_type")) ?? "Full-time",
-        workplace_type: workplaceTypes.find((type) => type === formData.get("workplace_type")) ?? "On-site",
-        salary: String(formData.get("salary") ?? ""),
-        description: String(formData.get("description") ?? ""),
-        requirements: String(formData.get("requirements") ?? ""),
+      const order = await createJobPaymentOrder(job, selectedDays)
+      await loadRazorpayCheckout()
+      if (!window.Razorpay) throw new Error("Razorpay checkout did not initialize. Please try again.")
+      const currentUser = await getCurrentUser()
+      const checkout = new window.Razorpay({
+        key: order.keyId,
+        amount: order.amount,
+        currency: order.currency,
+        name: "Gwalior Connect",
+        description: `Job listing for ${selectedDays} day${selectedDays === 1 ? "" : "s"}`,
+        order_id: order.orderId,
+        prefill: currentUser?.email ? { email: currentUser.email } : {},
+        theme: { color: "#2863bd" },
+        handler: (payment) => void confirmPayment(payment),
+        modal: { ondismiss: () => setSubmitting(false) },
       })
-      go(`/job/${job.id}`)
+      checkout.on("payment.failed", (response) => {
+        setError(response.error?.description || "Payment failed. Your job has not been published.")
+        setSubmitting(false)
+      })
+      checkout.open()
     } catch (submitError) {
-      console.error("Could not publish job listing:", submitError)
-      setError(getErrorMessage(submitError, "Could not publish this job."))
-    } finally {
+      console.error("Could not start job publication:", submitError)
+      setError(getErrorMessage(submitError, "Could not start this job payment."))
       setSubmitting(false)
     }
   }
@@ -577,10 +685,24 @@ export function PostJobPage({ loggedIn }: JobsPageProps) {
               <label>Job description<textarea name="description" required minLength={20} maxLength={5000} rows={7} placeholder="Describe the role, responsibilities, and what a typical day looks like." /></label>
               <label>Qualifications and requirements <span>(optional)</span><textarea name="requirements" maxLength={3000} rows={5} placeholder="Experience, skills, qualifications, or anything else applicants should know." /></label>
             </div>
+            <div className="job-form-section">
+              <h2>Listing duration and payment</h2>
+              <div className="job-form-grid job-payment-grid">
+                <label>How long should this job stay listed?
+                  <input name="days" type="number" min={1} max={365} step={1} value={days}
+                    onChange={(event) => setDays(Number(event.currentTarget.value))} required />
+                </label>
+                <p className="job-payment-total">₹{Number.isInteger(days) && days > 0 && days <= 365 ? days * 10 : 0} <span>total · ₹10 per day · up to 365 days</span></p>
+              </div>
+              <p className="job-payment-note">Your listing will be published after Razorpay confirms payment and will automatically expire at the end of this period.</p>
+            </div>
             {error && <ErrorNote>{error}</ErrorNote>}
             <div className="job-post-submit">
-              <p>Your signed-in account will own this listing and receive applications.</p>
-              <button type="submit" disabled={submitting} className="job-button job-button-primary">{submitting ? "Publishing…" : "Publish job"}</button>
+              <div>
+                <p>Your signed-in account will own this listing and receive applications.</p>
+                {pendingPayment && <button type="button" className="job-payment-retry" disabled={submitting} onClick={() => void confirmPayment(pendingPayment)}>Retry payment verification</button>}
+              </div>
+              <button type="submit" disabled={submitting || Boolean(pendingPayment)} className="job-button job-button-primary">{submitting ? "Waiting for payment…" : `Pay ₹${days * 10} and publish`}</button>
             </div>
           </form>
         )}
