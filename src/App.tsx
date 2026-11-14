@@ -1204,7 +1204,7 @@ function PostCard({
   const [feedbackOpen, setFeedbackOpen] = useState(false)
   const [feedbackMessage, setFeedbackMessage] = useState("")
   const isDatabasePost = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(post.id)
-  const openPost = () => go(`/post/${post.id}`, { post, feedPosts: feedContext })
+  const openPost = () => go(`/post/${post.id}`, { post, feedPosts: feedContext, from: window.location.pathname })
 
   useEffect(() => {
     setLiked(Boolean(post.likedByMe))
@@ -3106,19 +3106,25 @@ function CommentThread({
   )
 }
 
-function PostDetail({ id, returnTo }: { id: string; returnTo?: string }) {
+function PostDetail({ id, returnTo, modal = false }: { id: string; returnTo?: string; modal?: boolean }) {
   const [navigation] = useState(() => getPostNavigationState(id))
   const initialPost = navigation.post ?? posts.find((item) => item.id === id) ?? null
   const initialContext = navigation.feedPosts.length ? navigation.feedPosts : initialPost ? [initialPost] : []
   const initialIndex = initialContext.findIndex((item) => item.id === id)
-  const initialWindow = initialIndex >= 0
-    ? initialContext.slice(Math.max(0, initialIndex - 1), initialIndex + 2)
-    : initialPost ? [initialPost] : []
+  const initialWindow = modal
+    ? initialPost ? [initialPost] : []
+    : initialIndex >= 0
+      ? initialContext.slice(Math.max(0, initialIndex - 1), initialIndex + 2)
+      : initialPost ? [initialPost] : []
   const [post, setPost] = useState<Post | null>(initialPost)
+  const [postLiked, setPostLiked] = useState(Boolean(initialPost?.likedByMe))
+  const [postLikeBusy, setPostLikeBusy] = useState(false)
   const [feedPosts, setFeedPosts] = useState<Post[]>(initialWindow)
   const [comments, setComments] = useState<PostComment[]>([])
   const [commentsPost, setCommentsPost] = useState<Post | null>(null)
   const [comment, setComment] = useState("")
+  const [commentBusy, setCommentBusy] = useState(false)
+  const [postShareStatus, setPostShareStatus] = useState("")
   const [commenter, setCommenter] = useState<UserIdentity | null>(null)
   const [loading, setLoading] = useState(!initialPost)
   const [loadingMore, setLoadingMore] = useState(false)
@@ -3126,11 +3132,20 @@ function PostDetail({ id, returnTo }: { id: string; returnTo?: string }) {
   const [feedOffset, setFeedOffset] = useState(0)
   const [commentsOpen, setCommentsOpen] = useState(false)
   const [commentsClosing, setCommentsClosing] = useState(false)
+  const [likesOpen, setLikesOpen] = useState(false)
+  const [likesClosing, setLikesClosing] = useState(false)
   const [commentsLoading, setCommentsLoading] = useState(false)
   const [error, setError] = useState("")
   const selectedPostRef = useRef<HTMLDivElement>(null)
   const selectedPostCentered = useRef(false)
   const isDatabasePost = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)
+  const closePost = () => {
+    if (modal && window.history.state?.from) {
+      window.history.back()
+      return
+    }
+    go(returnTo || "/community")
+  }
 
   const refreshComments = async (targetPost = commentsPost) => {
     if (!targetPost || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(targetPost.id)) return
@@ -3182,6 +3197,7 @@ function PostDetail({ id, returnTo }: { id: string; returnTo?: string }) {
         if (row) {
           const freshPost = mapCommunityPost(row)
           setPost(freshPost)
+          setPostLiked(Boolean(freshPost.likedByMe))
           setFeedPosts((current) => current.map((item) => item.id === id ? freshPost : item))
           return freshPost
         } else if (!initialPost) {
@@ -3197,7 +3213,9 @@ function PostDetail({ id, returnTo }: { id: string; returnTo?: string }) {
 
     const loadCommenter = async () => {
       try {
-        const user = await getCurrentUser()
+        const { data, error: sessionError } = await supabase.auth.getSession()
+        if (sessionError) throw sessionError
+        const user = data.session?.user
         if (!active || !user) return
         const profile = await getOwnProfile(user.id)
         if (active) setCommenter({ full_name: profile.full_name, username: profile.username, avatar_url: profile.avatar_url })
@@ -3206,22 +3224,38 @@ function PostDetail({ id, returnTo }: { id: string; returnTo?: string }) {
       }
     }
 
+    const loadModalComments = async (targetPost: Post) => {
+      setCommentsPost(targetPost)
+      setComments([])
+      if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(targetPost.id)) return
+      setCommentsLoading(true)
+      try {
+        await refreshComments(targetPost)
+      } catch (reason) {
+        if (active) setError(reason instanceof Error ? reason.message : "Could not load comments.")
+      } finally {
+        if (active) setCommentsLoading(false)
+      }
+    }
+
     if (initialPost) {
       setLoading(false)
       void loadSelectedPost()
-      void loadFeed()
+      if (modal) void loadModalComments(initialPost)
+      else void loadFeed()
     } else {
       void (async () => {
         const selected = await loadSelectedPost()
-        if (active) void loadFeed(selected ?? undefined)
+        if (active && modal && selected) void loadModalComments(selected)
+        else if (active && !modal) void loadFeed(selected ?? undefined)
       })()
     }
     void loadCommenter()
     return () => { active = false }
-  }, [id, isDatabasePost])
+  }, [id, isDatabasePost, modal])
 
   useLayoutEffect(() => {
-    if (selectedPostCentered.current || !feedPosts.some((item) => item.id === id)) return
+    if (modal || selectedPostCentered.current || !feedPosts.some((item) => item.id === id)) return
     const selectedElement = selectedPostRef.current
     const scrollContainer = selectedElement?.closest<HTMLElement>(".app-content")
     if (!selectedElement || !scrollContainer) return
@@ -3231,16 +3265,32 @@ function PostDetail({ id, returnTo }: { id: string; returnTo?: string }) {
     const containerCenter = containerRect.top + scrollContainer.clientHeight / 2
     scrollContainer.scrollTop += selectedCenter - containerCenter
     selectedPostCentered.current = true
-  }, [feedPosts, id])
+  }, [feedPosts, id, modal])
 
   useEffect(() => {
-    if (!commentsOpen) return
+    if (!commentsOpen && !likesOpen) return
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") closeComments()
+      if (event.key !== "Escape") return
+      if (commentsOpen) closeComments()
+      else if (likesOpen) closeLikes()
     }
     window.addEventListener("keydown", handleKeyDown)
     return () => window.removeEventListener("keydown", handleKeyDown)
-  }, [commentsOpen])
+  }, [commentsOpen, likesOpen])
+
+  useEffect(() => {
+    if (!modal) return
+    const previousOverflow = document.body.style.overflow
+    document.body.style.overflow = "hidden"
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !commentsOpen && !likesOpen) closePost()
+    }
+    window.addEventListener("keydown", closeOnEscape)
+    return () => {
+      document.body.style.overflow = previousOverflow
+      window.removeEventListener("keydown", closeOnEscape)
+    }
+  }, [modal, commentsOpen, likesOpen])
 
   const closeComments = () => {
     if (commentsClosing) return
@@ -3251,6 +3301,18 @@ function PostDetail({ id, returnTo }: { id: string; returnTo?: string }) {
     if (commentsClosing && event.target === event.currentTarget) {
       setCommentsOpen(false)
       setCommentsClosing(false)
+    }
+  }
+
+  const closeLikes = () => {
+    if (likesClosing) return
+    setLikesClosing(true)
+  }
+
+  const finishClosingLikes = (event: React.AnimationEvent<HTMLElement>) => {
+    if (likesClosing && event.target === event.currentTarget) {
+      setLikesOpen(false)
+      setLikesClosing(false)
     }
   }
 
@@ -3295,27 +3357,288 @@ function PostDetail({ id, returnTo }: { id: string; returnTo?: string }) {
     }
   }
 
+  const openLikes = () => {
+    setLikesClosing(false)
+    setLikesOpen(true)
+  }
+
+  const toggleSelectedPostLike = async () => {
+    if (!post || postLikeBusy) return
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(post.id)) {
+      setError("Likes are available on published community posts.")
+      return
+    }
+    const wasLiked = postLiked
+    setPostLikeBusy(true)
+    setError("")
+    try {
+      await togglePostLike(post.id, wasLiked)
+      const likes = Math.max(0, post.likes + (wasLiked ? -1 : 1))
+      setPostLiked(!wasLiked)
+      setPost((current) => current?.id === post.id ? { ...current, likes } : current)
+      setFeedPosts((current) => current.map((item) => item.id === post.id ? { ...item, likes } : item))
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Could not update your like.")
+    } finally {
+      setPostLikeBusy(false)
+    }
+  }
+
+  const shareSelectedPost = async () => {
+    if (!post) return
+    const url = `${window.location.origin}/post/${encodeURIComponent(post.id)}`
+    setPostShareStatus("")
+    try {
+      if (typeof navigator.share === "function") {
+        await navigator.share({ title: "GwaliorWale post", text: post.text, url })
+        setPostShareStatus("Post shared")
+        return
+      }
+      await navigator.clipboard.writeText(url)
+      setPostShareStatus("Post link copied")
+    } catch (reason) {
+      if (reason instanceof DOMException && reason.name === "AbortError") return
+      setPostShareStatus(reason instanceof Error ? reason.message : "Could not share this post.")
+    }
+  }
+
   const submitComment = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault()
-    if (!comment.trim()) return
+    if (!comment.trim() || commentBusy) return
     if (!commenter) {
       go("/login")
       return
     }
     try {
       const targetPost = commentsPost
-      if (!targetPost || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(targetPost.id)) return
+      if (!targetPost) return
+      if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(targetPost.id)) {
+        setError("Comments are available on published community posts.")
+        return
+      }
+      setCommentBusy(true)
+      setError("")
       await addPostComment(targetPost.id, comment)
       setComment("")
       await refreshComments(targetPost)
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Could not add your comment.")
+    } finally {
+      setCommentBusy(false)
     }
   }
 
   const p = post || posts.find((item) => item.id === id) || posts[0]
+  if (modal) {
+    const rootComments = comments.filter((item) => !item.parent_comment_id)
+    const postDate = p.createdAt
+      ? new Date(p.createdAt).toLocaleDateString(undefined, { day: "numeric", month: "long", year: "numeric" }).toUpperCase()
+      : p.time.toUpperCase()
+
+    return (
+      <>
+        <div
+          className="profile-post-modal-backdrop"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) closePost()
+          }}
+        >
+          <section
+            className="profile-post-modal community-post-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="community-post-modal-title"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <div className="profile-post-modal-media">
+              {p.image ? (
+                <img src={p.image} alt={`Post by ${p.name}`} />
+              ) : (
+                <div className="profile-post-modal-no-image">
+                  <p>{p.text}</p>
+                </div>
+              )}
+            </div>
+            <div className="profile-post-modal-panel">
+              <header className="profile-post-modal-author">
+                <span className="profile-post-modal-avatar">
+                  {p.avatarUrl ? <img src={p.avatarUrl} alt="" /> : p.avatar}
+                </span>
+                <span className="profile-post-modal-author-copy">
+                  <strong id="community-post-modal-title">{p.name}</strong>
+                  <small>{p.handle} · {p.location || "Gwalior"}</small>
+                </span>
+                <button type="button" onClick={closePost} aria-label="Close post" autoFocus>×</button>
+              </header>
+              <div className="profile-post-modal-copy">
+                <span className="profile-post-modal-category">{p.category}</span>
+                <p>{p.text}</p>
+                {p.interestTags && p.interestTags.length > 0 && (
+                  <div className="profile-post-modal-tags">
+                    {p.interestTags.map((tag) => <span key={tag}>#{tag}</span>)}
+                  </div>
+                )}
+              </div>
+              <div className="profile-post-modal-comments" aria-label="Comments">
+                {error && <p role="alert" className="profile-post-modal-error">{error}</p>}
+                {commentsLoading ? (
+                  <p role="status" className="profile-post-modal-status">Loading comments...</p>
+                ) : rootComments.slice(0, 3).map((item) => (
+                  <article key={item.id} className="profile-post-modal-comment">
+                    <span className="profile-post-modal-comment-avatar">
+                      {item.author_avatar_url
+                        ? <img src={item.author_avatar_url} alt="" />
+                        : getInitials(item.author_full_name)}
+                    </span>
+                    <div>
+                      <p><strong>{item.author_full_name}</strong> {item.content}</p>
+                      <time dateTime={item.created_at}>
+                        {new Date(item.created_at).toLocaleDateString(undefined, { month: "short", day: "numeric" })}
+                      </time>
+                    </div>
+                  </article>
+                ))}
+                {!commentsLoading && rootComments.length === 0 && (
+                  <p className="profile-post-modal-status">No comments yet. Start the conversation.</p>
+                )}
+                {!commentsLoading && rootComments.length > 3 && (
+                  <button type="button" className="profile-post-modal-view-comments" onClick={() => void openComments(p)}>
+                    View all {comments.length} comments
+                  </button>
+                )}
+              </div>
+              <footer className="profile-post-modal-footer">
+                <div className="profile-post-modal-actions">
+                  <div className="profile-post-modal-engagement-group">
+                    <button
+                      type="button"
+                      onClick={() => void toggleSelectedPostLike()}
+                      disabled={postLikeBusy || commentsLoading}
+                      className={`profile-post-modal-like-button ${postLiked ? "is-liked" : ""}`}
+                      aria-label={postLiked ? "Unlike post" : "Like post"}
+                      aria-pressed={postLiked}
+                    >
+                      <Icon name="heart" size={19} />
+                    </button>
+                    <button
+                      type="button"
+                      className="profile-post-modal-count"
+                      onClick={openLikes}
+                      aria-label={`View ${p.likes} likes`}
+                    >
+                      {p.likes}
+                    </button>
+                    <button
+                      type="button"
+                      className="profile-post-modal-count profile-post-modal-action-comments"
+                      onClick={() => void openComments(p)}
+                      aria-label={`View ${p.comments} comments`}
+                    >
+                      <Icon name="comment" size={17} />
+                      <span>{p.comments}</span>
+                    </button>
+                    <button
+                      type="button"
+                      className="profile-post-modal-share-button"
+                      onClick={() => void shareSelectedPost()}
+                      aria-label="Share post"
+                      title="Share post"
+                    >
+                      <Icon name="share" size={17} />
+                    </button>
+                  </div>
+                </div>
+                {postShareStatus && <p role="status" className="profile-post-modal-share-status">{postShareStatus}</p>}
+                <time dateTime={p.createdAt}>{postDate}</time>
+                <form onSubmit={(event) => void submitComment(event)} className="profile-post-modal-comment-form">
+                  <input
+                    value={comment}
+                    onChange={(event) => setComment(event.target.value)}
+                    aria-label="Add a comment"
+                    placeholder="Add a comment..."
+                  />
+                  <button type="submit" disabled={!comment.trim() || commentBusy || commentsLoading} aria-label="Post comment">
+                    <Icon name="send" size={17} />
+                  </button>
+                </form>
+              </footer>
+            </div>
+          </section>
+        </div>
+        {commentsOpen && (
+          <div className={`post-detail-comments-backdrop${commentsClosing ? " is-closing" : ""}`} onClick={closeComments}>
+            <section
+              className={`post-detail-comments${commentsClosing ? " is-closing" : ""}`}
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="post-detail-comments-title"
+              onClick={(event) => event.stopPropagation()}
+              onAnimationEnd={finishClosingComments}
+            >
+              <div className="post-detail-comments-heading">
+                <h2 id="post-detail-comments-title">Comments <span>{commentsPost?.comments ?? comments.length}</span></h2>
+                <button type="button" onClick={closeComments} aria-label="Close comments"><Icon name="close" size={18} /></button>
+              </div>
+              {commentsLoading ? <p role="status" className="post-detail-comment-status">Loading comments...</p> : null}
+              {commenter ? (
+                <form onSubmit={(event) => void submitComment(event)} className="post-detail-comment-form">
+                  <Avatar text={getInitials(commenter.full_name)} imageUrl={commenter.avatar_url} />
+                  <div className="post-detail-comment-input">
+                    <input
+                      value={comment}
+                      onChange={(event) => setComment(event.target.value)}
+                      aria-label="Add a comment"
+                      placeholder="Add a comment..."
+                    />
+                    <button disabled={!comment.trim() || commentBusy} aria-label="Send comment" className="grid h-10 w-10 place-items-center rounded-full bg-blue-600 text-white disabled:opacity-50">
+                      <Icon name="send" size={16} />
+                    </button>
+                  </div>
+                </form>
+              ) : <button onClick={() => go("/login")} className="post-detail-login">Log in to comment</button>}
+              <div className="post-detail-comment-list">
+                {comments.filter((item) => !item.parent_comment_id).map((item) => (
+                  <CommentThread key={item.id} comment={item} allComments={comments} canComment={Boolean(commenter)} onRefresh={() => refreshComments()} />
+                ))}
+                {!commentsLoading && !comments.length && (
+                  <div className="post-detail-empty-comments">
+                    <span><Icon name="chat" size={18} /></span>
+                    <div>
+                      <strong>No comments yet</strong>
+                      <p>Start a thoughtful conversation with the community.</p>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </section>
+          </div>
+        )}
+        {likesOpen && (
+          <div className={`post-detail-comments-backdrop${likesClosing ? " is-closing" : ""}`} onClick={closeLikes}>
+            <section
+              className={`post-detail-comments${likesClosing ? " is-closing" : ""}`}
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="post-detail-likes-title"
+              onClick={(event) => event.stopPropagation()}
+              onAnimationEnd={finishClosingLikes}
+            >
+              <div className="post-detail-comments-heading">
+                <h2 id="post-detail-likes-title">Likes <span>{p.likes}</span></h2>
+                <button type="button" onClick={closeLikes} aria-label="Close likes"><Icon name="close" size={18} /></button>
+              </div>
+              <PostLikersList postId={p.id} active={likesOpen && !likesClosing} available={isDatabasePost} />
+            </section>
+          </div>
+        )}
+      </>
+    )
+  }
+
   return (
-    <main className="post-detail-page">
+    <main
+      className="post-detail-page"
+    >
       <header className="post-detail-header">
         <button type="button" onClick={() => go(returnTo || "/community")} aria-label="Back to posts" className="post-detail-back">
           <Icon name="chevron" size={20} />
@@ -5456,6 +5779,19 @@ export default function App() {
   const [currentProfile, setCurrentProfile] = useState<UserIdentity | null>(null)
   const [profileError, setProfileError] = useState("")
   const appContentRef = useRef<HTMLDivElement>(null)
+  const previousPathRef = useRef(path)
+  const historyState: unknown = window.history.state
+  const modalReturnPath = path.startsWith("/post/")
+    && historyState
+    && typeof historyState === "object"
+    && "from" in historyState
+    && typeof historyState.from === "string"
+    && historyState.from.startsWith("/")
+    && !historyState.from.startsWith("//")
+      ? historyState.from
+      : null
+  const isPostModal = Boolean(modalReturnPath)
+  const pagePath = modalReturnPath ?? path
 
   useEffect(() => {
     let active = true
@@ -5559,62 +5895,67 @@ export default function App() {
     return () => window.removeEventListener("popstate", h)
   }, [])
   useEffect(() => {
-    if (!path.startsWith("/post/") && appContentRef.current) appContentRef.current.scrollTop = 0
+    const previousPath = previousPathRef.current
+    if (!path.startsWith("/post/") && !previousPath.startsWith("/post/") && appContentRef.current) {
+      appContentRef.current.scrollTop = 0
+    }
+    previousPathRef.current = path
   }, [path])
   let page: ReactNode
-  if (path === "/") page = <HomePage profile={currentProfile} loggedIn={loggedIn} />
-  else if (path === "/community") page = <CommunityPage profile={currentProfile} loggedIn={loggedIn} />
-  else if (path === "/trending") page = <TrendingPage key={window.location.search} />
-  else if (path.startsWith("/post/")) {
+  if (pagePath === "/") page = <HomePage profile={currentProfile} loggedIn={loggedIn} />
+  else if (pagePath === "/community") page = <CommunityPage profile={currentProfile} loggedIn={loggedIn} />
+  else if (pagePath === "/trending") page = <TrendingPage key={window.location.search} />
+  else if (pagePath.startsWith("/post/")) {
     const requestedReturnPath = new URLSearchParams(window.location.search).get("from")
     const returnTo = requestedReturnPath?.startsWith("/profile") && !requestedReturnPath.startsWith("//")
       ? requestedReturnPath
       : undefined
-    page = <PostDetail key={path} id={path.split("/")[2]} returnTo={returnTo} />
+    page = <PostDetail key={pagePath} id={pagePath.split("/")[2]} returnTo={returnTo} />
   }
-  else if (path === "/profile")
-    page = <ProfilePage key={path} onLogout={() => setLoggedIn(false)} />
-  else if (path === "/profile/edit") page = <ProfileEditorPage />
-  else if (path.startsWith("/profile/"))
-    page = <ProfilePage key={path} profileSlug={path.split("/")[2]} onLogout={() => setLoggedIn(false)} />
-  else if (path === "/messages" || path.startsWith("/messages/"))
-    page = <MessagingPage conversationId={path.split("/")[2]} />
-  else if (path === "/explore") page = <ExplorePage />
-  else if (path.startsWith("/explore/"))
-    page = <ExplorePage detail={path.split("/")[2]} />
-  else if (path === "/buy-sell") page = <MarketplacePage loggedIn={loggedIn} />
-  else if (path === "/businesses") page = <BusinessDirectory />
-  else if (path.startsWith("/business/"))
-    page = <BusinessProfile id={path.split("/")[2]} />
-  else if (path === "/jobs") page = <JobsPage loggedIn={loggedIn} />
-  else if (path.startsWith("/job/"))
-    page = <JobDetail id={path.split("/")[2]} loggedIn={loggedIn} />
-  else if (path === "/post-job") page = <PostJobPage loggedIn={loggedIn} />
-  else if (path === "/events") page = <EventsPage />
-  else if (path.startsWith("/events/"))
-    page = <EventsPage detail={path.split("/")[2]} />
-  else if (path === "/login")
+  else if (pagePath === "/profile")
+    page = <ProfilePage key={pagePath} onLogout={() => setLoggedIn(false)} />
+  else if (pagePath === "/profile/edit") page = <ProfileEditorPage />
+  else if (pagePath.startsWith("/profile/"))
+    page = <ProfilePage key={pagePath} profileSlug={pagePath.split("/")[2]} onLogout={() => setLoggedIn(false)} />
+  else if (pagePath === "/messages" || pagePath.startsWith("/messages/"))
+    page = <MessagingPage conversationId={pagePath.split("/")[2]} />
+  else if (pagePath === "/explore") page = <ExplorePage />
+  else if (pagePath.startsWith("/explore/"))
+    page = <ExplorePage detail={pagePath.split("/")[2]} />
+  else if (pagePath === "/buy-sell") page = <MarketplacePage loggedIn={loggedIn} />
+  else if (pagePath === "/businesses") page = <BusinessDirectory />
+  else if (pagePath.startsWith("/business/"))
+    page = <BusinessProfile id={pagePath.split("/")[2]} />
+  else if (pagePath === "/jobs") page = <JobsPage loggedIn={loggedIn} />
+  else if (pagePath.startsWith("/job/"))
+    page = <JobDetail id={pagePath.split("/")[2]} loggedIn={loggedIn} />
+  else if (pagePath === "/post-job") page = <PostJobPage loggedIn={loggedIn} />
+  else if (pagePath === "/events") page = <EventsPage />
+  else if (pagePath.startsWith("/events/"))
+    page = <EventsPage detail={pagePath.split("/")[2]} />
+  else if (pagePath === "/login")
     page = <AuthPage onSuccess={() => setLoggedIn(true)} />
-  else if (path === "/register")
+  else if (pagePath === "/register")
     page = <AuthPage register onSuccess={() => setLoggedIn(true)} />
-  else if (path === "/notifications") page = <NotificationsPage />
-  else if (path === "/create-post")
+  else if (pagePath === "/notifications") page = <NotificationsPage />
+  else if (pagePath === "/create-post")
     page = <CreatePostPage loggedIn={loggedIn} profile={currentProfile} />
-  else if (path === "/updates") page = <NotificationsPage />
-  else page = <InfoPage slug={path.replace("/", "")} />
+  else if (pagePath === "/updates") page = <NotificationsPage />
+  else page = <InfoPage slug={pagePath.replace("/", "")} />
   return (
-    <div className={`app-shell min-h-screen bg-white text-[#172033] ${path === "/community" ? "community-app" : ""} ${path === "/buy-sell" ? "marketplace-app-shell" : ""} ${path === "/messages" || path.startsWith("/messages/") ? "messages-app-shell" : ""}`}>
-      <Header path={path} loggedIn={loggedIn} profile={currentProfile} />
-      <div ref={appContentRef} className={`app-content ${path === "/messages" || path.startsWith("/messages/") ? "app-content-chat" : ""}`}>
+    <div className={`app-shell min-h-screen bg-white text-[#172033] ${pagePath === "/community" ? "community-app" : ""} ${pagePath === "/buy-sell" ? "marketplace-app-shell" : ""} ${pagePath === "/messages" || pagePath.startsWith("/messages/") ? "messages-app-shell" : ""}`}>
+      <Header path={pagePath} loggedIn={loggedIn} profile={currentProfile} />
+      <div ref={appContentRef} className={`app-content ${pagePath === "/messages" || pagePath.startsWith("/messages/") ? "app-content-chat" : ""}`}>
         {profileError && (
           <div role="alert" className="border-b border-red-200 bg-red-50 px-4 py-2 text-center text-xs text-red-700">
             Could not load your profile: {profileError}
           </div>
         )}
         {page}
+        {isPostModal && <PostDetail key={path} id={path.split("/")[2]} modal />}
         <Footer />
       </div>
-      <MobileNav path={path} />
+      <MobileNav path={pagePath} />
     </div>
   )
 }

@@ -2,13 +2,17 @@ import { FormEvent, useEffect, useRef, useState } from "react"
 import {
   CommunityPost,
   createConversation,
+  addPostComment,
   FollowListMember,
   getCachedOwnProfile,
+  getCommunityPost,
   getJoinedCommunityGroups,
   getMyJobListings,
   getMyMarketplaceListings,
   getOwnProfile,
   getPersonalizedCommunityPosts,
+  getPostComments,
+  getPostLikers,
   getProfileFollowList,
   getPublicProfile,
   getPublicProfileByUsername,
@@ -17,10 +21,13 @@ import {
   JobListing,
   MarketplaceListing,
   OwnProfile,
+  PostComment,
+  PostLiker,
   RecommendedCommunityGroup,
   signOutUser,
   supabase,
   toggleCommunityGroupMembership,
+  togglePostLike,
   toggleUserFollow,
   updateOwnProfile,
   uploadProfileImage,
@@ -103,6 +110,7 @@ function Icon({ name, size = 18, className = "" }: { name: string; size?: number
         <path d="m20 20-4-4" />
       </>
     ),
+    send: <path d="m22 2-7 20-4-9-9-4ZM22 2 11 13" />,
     share: (
       <>
         <circle cx="18" cy="5" r="3" />
@@ -176,6 +184,87 @@ function Button({ children, onClick, variant = "primary", className = "", type =
   )
 }
 
+function ProfilePostLikersList({ postId, active }: { postId: string; active: boolean }) {
+  const [likers, setLikers] = useState<PostLiker[]>([])
+  const [loading, setLoading] = useState(false)
+  const [loadingMore, setLoadingMore] = useState(false)
+  const [error, setError] = useState("")
+  const [offset, setOffset] = useState(0)
+  const [hasMore, setHasMore] = useState(false)
+
+  useEffect(() => {
+    if (!active) return
+    let current = true
+    setLikers([])
+    setOffset(0)
+    setError("")
+    setLoading(true)
+    getPostLikers(postId)
+      .then((rows) => {
+        if (!current) return
+        setLikers(rows)
+        setOffset(rows.length)
+        setHasMore(rows.length === 50)
+      })
+      .catch((reason: unknown) => {
+        if (current) setError(reason instanceof Error ? reason.message : "Could not load post likes.")
+      })
+      .finally(() => {
+        if (current) setLoading(false)
+      })
+    return () => { current = false }
+  }, [active, postId])
+
+  const loadMore = async () => {
+    if (loadingMore || !hasMore) return
+    setLoadingMore(true)
+    setError("")
+    try {
+      const rows = await getPostLikers(postId, 50, offset)
+      setLikers((current) => [...current, ...rows])
+      setOffset((current) => current + rows.length)
+      setHasMore(rows.length === 50)
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Could not load more likes.")
+    } finally {
+      setLoadingMore(false)
+    }
+  }
+
+  if (!active) return null
+  if (loading) return <p role="status" className="profile-engagement-status">Loading likes…</p>
+  if (error && !likers.length) return <p role="alert" className="profile-engagement-error">{error}</p>
+
+  return (
+    <div className="profile-engagement-list">
+      {likers.map((liker) => (
+        <button
+          type="button"
+          key={liker.id}
+          onClick={() => go(`/profile/${encodeURIComponent(liker.username)}`)}
+          className="profile-engagement-person"
+        >
+          <span className="profile-engagement-avatar">
+            {liker.avatar_url ? <img src={liker.avatar_url} alt="" /> : initials(liker.full_name || "Community member")}
+          </span>
+          <span className="profile-engagement-person-copy">
+            <strong>{liker.full_name || "Community member"}</strong>
+            <small>@{liker.username}</small>
+          </span>
+          <Icon name="heart" size={18} className="profile-engagement-heart" />
+        </button>
+      ))}
+      {!likers.length && <p className="profile-engagement-status">No one has liked this post yet.</p>}
+      {error && <p role="alert" className="profile-engagement-error">{error}</p>}
+      {hasMore && (
+        <button type="button" onClick={() => void loadMore()} disabled={loadingMore} className="profile-engagement-more">
+          {loadingMore ? "Loading…" : "Show more"}
+        </button>
+      )}
+    </div>
+  )
+}
+
 type ProfileData = NonNullable<ReturnType<typeof getCachedOwnProfile>>
 
 type UserPost = {
@@ -189,6 +278,9 @@ type UserPost = {
   comments_count: number
   interest_tags: string[]
 }
+
+const isDatabasePostId = (id: string) =>
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)
 
 type ProfileActivity = {
   id: string
@@ -312,6 +404,16 @@ export default function ProfilePage({ onLogout, profileSlug }: { onLogout?: () =
   const [hubError, setHubError] = useState("")
   const [joiningGroupId, setJoiningGroupId] = useState("")
   const [followingSuggestionId, setFollowingSuggestionId] = useState("")
+  const [selectedPost, setSelectedPost] = useState<UserPost | null>(null)
+  const [selectedPostComments, setSelectedPostComments] = useState<PostComment[]>([])
+  const [selectedPostCommentsLoading, setSelectedPostCommentsLoading] = useState(false)
+  const [selectedPostError, setSelectedPostError] = useState("")
+  const [selectedPostLiked, setSelectedPostLiked] = useState(false)
+  const [engagementDialog, setEngagementDialog] = useState<"likes" | "comments" | null>(null)
+  const [postLikeBusy, setPostLikeBusy] = useState(false)
+  const [commentDraft, setCommentDraft] = useState("")
+  const [commentBusy, setCommentBusy] = useState(false)
+  const [postShareStatus, setPostShareStatus] = useState("")
   const isOwnProfile = Boolean(profile && viewerId && profile.id === viewerId)
 
   useEffect(() => {
@@ -536,6 +638,114 @@ export default function ProfilePage({ onLogout, profileSlug }: { onLogout?: () =
     return () => { active = false }
   }, [isOwnProfile, viewerId])
 
+  useEffect(() => {
+    if (!selectedPost) return
+    const postId = selectedPost.id
+    if (!isDatabasePostId(postId)) return
+
+    let active = true
+    setSelectedPostComments([])
+    setSelectedPostCommentsLoading(true)
+    setSelectedPostError("")
+    Promise.allSettled([getCommunityPost(postId), getPostComments(postId)])
+      .then(([postResult, commentsResult]) => {
+        if (!active) return
+        const errors: string[] = []
+        if (postResult.status === "fulfilled" && postResult.value) {
+          const freshPost = postResult.value
+          setSelectedPost((current) => current?.id === postId ? {
+            ...current,
+            content: freshPost.content,
+            category: freshPost.category,
+            location: freshPost.location,
+            image_url: freshPost.image_url,
+            created_at: freshPost.created_at,
+            likes_count: freshPost.likes_count,
+            comments_count: freshPost.comments_count,
+            interest_tags: freshPost.interest_tags ?? [],
+          } : current)
+          setSelectedPostLiked(freshPost.liked_by_me)
+        } else if (postResult.status === "rejected") {
+          errors.push(postResult.reason instanceof Error ? postResult.reason.message : "Could not refresh this post.")
+        }
+        if (commentsResult.status === "fulfilled") {
+          setSelectedPostComments(commentsResult.value)
+        } else {
+          errors.push(commentsResult.reason instanceof Error ? commentsResult.reason.message : "Could not load comments.")
+        }
+        if (errors.length) setSelectedPostError(errors.join(" "))
+      })
+      .finally(() => {
+        if (active) setSelectedPostCommentsLoading(false)
+      })
+    return () => { active = false }
+  }, [selectedPost?.id])
+
+  useEffect(() => {
+    if (!selectedPost) return
+    const previousOverflow = document.body.style.overflow
+    document.body.style.overflow = "hidden"
+    return () => {
+      document.body.style.overflow = previousOverflow
+    }
+  }, [selectedPost])
+
+  useEffect(() => {
+    if (!selectedPost) return
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return
+      if (engagementDialog) setEngagementDialog(null)
+      else setSelectedPost(null)
+    }
+    window.addEventListener("keydown", closeOnEscape)
+    return () => window.removeEventListener("keydown", closeOnEscape)
+  }, [selectedPost, engagementDialog])
+
+  const toggleSelectedPostLike = async () => {
+    if (!selectedPost || postLikeBusy) return
+    if (!isDatabasePostId(selectedPost.id)) {
+      setSelectedPostError("Likes are available on published posts.")
+      return
+    }
+    const wasLiked = selectedPostLiked
+    setPostLikeBusy(true)
+    setSelectedPostError("")
+    try {
+      await togglePostLike(selectedPost.id, wasLiked)
+      const count = Math.max(0, selectedPost.likes_count + (wasLiked ? -1 : 1))
+      setSelectedPostLiked(!wasLiked)
+      setSelectedPost((current) => current?.id === selectedPost.id ? { ...current, likes_count: count } : current)
+      setPosts((current) => current.map((post) => post.id === selectedPost.id ? { ...post, likes_count: count } : post))
+    } catch (reason) {
+      setSelectedPostError(reason instanceof Error ? reason.message : "Could not update your like.")
+    } finally {
+      setPostLikeBusy(false)
+    }
+  }
+
+  const submitSelectedPostComment = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    if (!selectedPost || !commentDraft.trim() || commentBusy || selectedPostCommentsLoading) return
+    if (!isDatabasePostId(selectedPost.id)) {
+      setSelectedPostError("Comments are available on published posts.")
+      return
+    }
+    setCommentBusy(true)
+    setSelectedPostError("")
+    try {
+      await addPostComment(selectedPost.id, commentDraft)
+      setCommentDraft("")
+      const comments = await getPostComments(selectedPost.id)
+      setSelectedPostComments(comments)
+      setSelectedPost((current) => current?.id === selectedPost.id ? { ...current, comments_count: comments.length } : current)
+      setPosts((current) => current.map((post) => post.id === selectedPost.id ? { ...post, comments_count: comments.length } : post))
+    } catch (reason) {
+      setSelectedPostError(reason instanceof Error ? reason.message : "Could not add your comment.")
+    } finally {
+      setCommentBusy(false)
+    }
+  }
+
   const joinRecommendedGroup = async (group: RecommendedCommunityGroup) => {
     if (joiningGroupId) return
     setJoiningGroupId(group.id)
@@ -565,6 +775,28 @@ export default function ProfilePage({ onLogout, profileSlug }: { onLogout?: () =
       setHubError(reason instanceof Error ? reason.message : "Could not follow this member.")
     } finally {
       setFollowingSuggestionId("")
+    }
+  }
+
+  const shareSelectedPost = async () => {
+    if (!selectedPost) return
+    const url = `${window.location.origin}/post/${encodeURIComponent(selectedPost.id)}`
+    setPostShareStatus("")
+    try {
+      if (typeof navigator.share === "function") {
+        await navigator.share({
+          title: `${profile?.full_name ?? "Community member"} on GwaliorWale`,
+          text: selectedPost.content,
+          url,
+        })
+        setPostShareStatus("Post shared")
+        return
+      }
+      await navigator.clipboard.writeText(url)
+      setPostShareStatus("Post link copied")
+    } catch (reason) {
+      if (reason instanceof DOMException && reason.name === "AbortError") return
+      setPostShareStatus(reason instanceof Error ? reason.message : "Could not share this post.")
     }
   }
 
@@ -1256,103 +1488,40 @@ export default function ProfilePage({ onLogout, profileSlug }: { onLogout?: () =
           </aside>
 
           <section className="profile-posts space-y-5">
-            {isOwnProfile && activeSection === "activity" && (
-              <section className="profile-composer" aria-label="Create a community post">
-                <button type="button" className="profile-composer-prompt" onClick={() => go("/create-post")}>
-                  <span className="profile-composer-avatar">
-                    {profile.avatar_url ? <img src={profile.avatar_url} alt="" /> : initials(profile.full_name)}
-                  </span>
-                  <span>Share something with Gwalior…</span>
-                  <Icon name="plus" size={18} />
-                </button>
-                <div className="profile-composer-actions">
-                  <button type="button" onClick={() => go("/create-post")}><Icon name="image" size={16} />Create a post</button>
-                  <button type="button" onClick={() => go("/post-job")}><Icon name="briefcase" size={16} />Post a job</button>
-                  <button type="button" onClick={() => go("/buy-sell")}><Icon name="shop" size={16} />List an item</button>
-                </div>
-              </section>
-            )}
             <div className="profile-posts-panel rounded-3xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
-              <div className="profile-posts-heading flex items-center gap-2 pb-3 text-sm">
-                <span className="inline-flex items-center gap-2 rounded-full bg-blue-50 px-3 py-1.5 font-extrabold text-blue-700">
-                  <Icon name="image" size={14} />
-                  {isOwnProfile ? "Your posts" : "Posts"}
-                </span>
-                <span className="ml-auto text-xs font-bold text-slate-500">{posts.length} posts</span>
-              </div>
-
-              <div className="profile-post-list mt-5 space-y-5">
-                <div className="profile-post-grid" aria-label="Profile posts">
-                  {posts.map((post) => (
-                    <button
-                      key={post.id}
-                      type="button"
-                      onClick={() => go(`/post/${post.id}?from=${encodeURIComponent(window.location.pathname)}`, {
-                        post: postForDetail(post, profile),
-                        feedPosts: posts.map((item) => postForDetail(item, profile)),
-                      })}
-                      className="profile-grid-tile"
-                      aria-label={`Open post: ${post.content.slice(0, 100)}`}
-                    >
-                      {post.image_url ? (
-                        <img src={post.image_url} alt="" loading="lazy" />
-                      ) : (
-                        <span className="profile-grid-text">{post.content}</span>
-                      )}
-                      <span className="profile-grid-meta">
-                        <Icon name="heart" size={14} /> {post.likes_count}
-                        <Icon name="comment" size={14} /> {post.comments_count}
-                      </span>
-                    </button>
-                  ))}
-                  {posts.length === 0 && (
-                    <p className="profile-grid-empty">{isOwnProfile ? "Your posts will show up here." : "No public posts yet."}</p>
-                  )}
-                </div>
+              <div className="profile-post-grid mt-4" aria-label="Profile posts">
                 {posts.map((post) => (
-                  <article key={post.id} className="profile-post-card overflow-hidden rounded-3xl border border-slate-200 bg-slate-50">
-                    <div className="flex items-center justify-between gap-3 p-4">
-                      <div className="flex items-center gap-3">
-                        <button type="button" onClick={() => go(`/profile/${encodeURIComponent(normalizeProfileUsername(profile.username))}`)} className="relative grid h-10 w-10 place-items-center overflow-hidden rounded-full bg-gradient-to-br from-sky-200 to-blue-600 text-xs font-black text-white">
-                          {profile.avatar_url ? (
-                            <img src={profile.avatar_url} alt="" className="absolute inset-0 h-full w-full object-cover" />
-                          ) : initials(profile.full_name)}
-                        </button>
-                        <div>
-                          <button type="button" onClick={() => go(`/profile/${encodeURIComponent(normalizeProfileUsername(profile.username))}`)} className="block text-left text-sm font-extrabold hover:text-blue-700">{profile.full_name}</button>
-                          <button type="button" onClick={() => go(`/profile/${encodeURIComponent(normalizeProfileUsername(profile.username))}`)} className="text-left text-[11px] text-slate-500 hover:text-blue-700">@{normalizeProfileUsername(profile.username)}.gwl · {new Date(post.created_at).toLocaleDateString()}</button>
-                        </div>
-                      </div>
-                      <span className="text-xs font-bold text-slate-500">{post.category}</span>
-                    </div>
-
-                    <div className="px-4 pb-4">
-                      <p className="text-sm leading-7 text-slate-600">{post.content}</p>
-                      {post.interest_tags?.length > 0 && (
-                        <div className="mt-3 flex flex-wrap gap-1.5">
-                          {post.interest_tags.map((tag) => (
-                            <span key={tag} className="rounded-full bg-blue-50 px-2.5 py-1 text-[9px] font-bold text-blue-700">{tag}</span>
-                          ))}
-                        </div>
-                      )}
-                      {post.image_url && <img src={post.image_url} alt="" className="mt-4 h-72 w-full rounded-2xl object-cover" />}
-                    </div>
-                    <div className="flex items-center gap-5 border-t border-slate-200 px-4 py-3 text-xs font-bold text-slate-500">
-                      <span className="flex items-center gap-2">
-                        <Icon name="heart" size={15} />
-                        {post.likes_count} {post.likes_count === 1 ? "like" : "likes"}
-                      </span>
-                      <button onClick={() => go(`/post/${post.id}?from=${encodeURIComponent(window.location.pathname)}`, {
-                        post: postForDetail(post, profile),
-                        feedPosts: posts.map((item) => postForDetail(item, profile)),
-                      })} className="flex items-center gap-2 hover:text-blue-600">
-                        <Icon name="comment" size={15} />
-                        {post.comments_count} {post.comments_count === 1 ? "comment" : "comments"}
-                      </button>
-                    </div>
-                  </article>
+                  <button
+                    key={post.id}
+                    type="button"
+                    onClick={() => {
+                      setSelectedPost(post)
+                      setSelectedPostLiked(false)
+                      setEngagementDialog(null)
+                      setCommentDraft("")
+                      setPostShareStatus("")
+                      setSelectedPostComments([])
+                      setSelectedPostCommentsLoading(true)
+                      setSelectedPostError("")
+                    }}
+                    className="profile-grid-tile"
+                    aria-label={`Open post: ${post.content.slice(0, 100)}`}
+                    aria-haspopup="dialog"
+                  >
+                    {post.image_url ? (
+                      <img src={post.image_url} alt="" loading="lazy" />
+                    ) : (
+                      <span className="profile-grid-text">{post.content}</span>
+                    )}
+                    <span className="profile-grid-meta">
+                      <Icon name="heart" size={14} /> {post.likes_count}
+                      <Icon name="comment" size={14} /> {post.comments_count}
+                    </span>
+                  </button>
                 ))}
-                {posts.length === 0 && <p className="profile-post-empty py-8 text-center text-sm text-slate-500">{isOwnProfile ? "You haven’t shared a post yet." : "No public posts yet."}</p>}
+                {posts.length === 0 && (
+                  <p className="profile-grid-empty">{isOwnProfile ? "Your posts will show up here." : "No public posts yet."}</p>
+                )}
               </div>
             </div>
           </section>
@@ -1451,6 +1620,208 @@ export default function ProfilePage({ onLogout, profileSlug }: { onLogout?: () =
           )}
         </div>
       </main>
+      {selectedPost && (
+        <div
+          className="profile-post-modal-backdrop"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) setSelectedPost(null)
+          }}
+        >
+          <section
+            className="profile-post-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="profile-post-modal-title"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <div className="profile-post-modal-media">
+              {selectedPost.image_url ? (
+                <img src={selectedPost.image_url} alt={`Post by ${profile.full_name}`} />
+              ) : (
+                <div className="profile-post-modal-no-image">
+                  <p>{selectedPost.content}</p>
+                </div>
+              )}
+            </div>
+            <div className="profile-post-modal-panel">
+              <header className="profile-post-modal-author">
+                <span className="profile-post-modal-avatar">
+                  {profile.avatar_url ? <img src={profile.avatar_url} alt="" /> : initials(profile.full_name)}
+                </span>
+                <span className="profile-post-modal-author-copy">
+                  <strong id="profile-post-modal-title">{profile.full_name}</strong>
+                  <small>@{normalizeProfileUsername(profile.username)}.gwl · {selectedPost.location || "Gwalior"}</small>
+                </span>
+                <button type="button" onClick={() => setSelectedPost(null)} aria-label="Close post" autoFocus>×</button>
+              </header>
+              <div className="profile-post-modal-copy">
+                <span className="profile-post-modal-category">{selectedPost.category}</span>
+                <p>{selectedPost.content}</p>
+                {selectedPost.interest_tags?.length > 0 && (
+                  <div className="profile-post-modal-tags">
+                    {selectedPost.interest_tags.map((tag) => <span key={tag}>#{tag}</span>)}
+                  </div>
+                )}
+              </div>
+              <div className="profile-post-modal-comments" aria-label="Comments">
+                {selectedPostError && <p role="alert" className="profile-post-modal-error">{selectedPostError}</p>}
+                {selectedPostCommentsLoading ? (
+                  <p role="status" className="profile-post-modal-status">Loading comments…</p>
+                ) : selectedPostComments.slice(0, 3).map((comment) => (
+                    <article key={comment.id} className="profile-post-modal-comment">
+                      <span className="profile-post-modal-comment-avatar">
+                        {comment.author_avatar_url
+                          ? <img src={comment.author_avatar_url} alt="" />
+                          : initials(comment.author_full_name)}
+                      </span>
+                      <div>
+                        <p><strong>{comment.author_full_name}</strong> {comment.content}</p>
+                        <time dateTime={comment.created_at}>{new Date(comment.created_at).toLocaleDateString(undefined, { month: "short", day: "numeric" })}</time>
+                      </div>
+                    </article>
+                  ))}
+                {!selectedPostCommentsLoading && selectedPostComments.length === 0 && (
+                  <p className="profile-post-modal-status">No comments yet. Start the conversation.</p>
+                )}
+                {!selectedPostCommentsLoading && selectedPostComments.length > 3 && (
+                  <button type="button" className="profile-post-modal-view-comments" onClick={() => setEngagementDialog("comments")}>
+                    View all {selectedPostComments.length} comments
+                  </button>
+                )}
+              </div>
+              <footer className="profile-post-modal-footer">
+                <div className="profile-post-modal-actions">
+                  <div className="profile-post-modal-engagement-group">
+                    <button
+                      type="button"
+                      onClick={() => void toggleSelectedPostLike()}
+                      disabled={postLikeBusy || selectedPostCommentsLoading}
+                      className={`profile-post-modal-like-button ${selectedPostLiked ? "is-liked" : ""}`}
+                      aria-label={selectedPostLiked ? "Unlike post" : "Like post"}
+                      aria-pressed={selectedPostLiked}
+                    >
+                      <Icon name="heart" size={19} />
+                    </button>
+                    <button
+                      type="button"
+                      className="profile-post-modal-count"
+                      onClick={() => setEngagementDialog("likes")}
+                      aria-label={`View ${selectedPost.likes_count} likes`}
+                    >
+                      {selectedPost.likes_count}
+                    </button>
+                    <button
+                      type="button"
+                      className="profile-post-modal-count profile-post-modal-action-comments"
+                      onClick={() => setEngagementDialog("comments")}
+                      aria-label={`View ${selectedPost.comments_count} comments`}
+                    >
+                      <Icon name="comment" size={17} />
+                      <span>{selectedPost.comments_count}</span>
+                    </button>
+                    <button
+                      type="button"
+                      className="profile-post-modal-share-button"
+                      onClick={() => void shareSelectedPost()}
+                      aria-label="Share post"
+                      title="Share post"
+                    >
+                      <Icon name="share" size={17} />
+                    </button>
+                  </div>
+                </div>
+                {postShareStatus && <p role="status" className="profile-post-modal-share-status">{postShareStatus}</p>}
+                <time dateTime={selectedPost.created_at}>
+                  {new Date(selectedPost.created_at).toLocaleDateString(undefined, { month: "long", day: "numeric", year: "numeric" })}
+                </time>
+                <form onSubmit={(event) => void submitSelectedPostComment(event)} className="profile-post-modal-comment-form">
+                  <input
+                    value={commentDraft}
+                    onChange={(event) => setCommentDraft(event.target.value)}
+                    aria-label="Add a comment"
+                    placeholder="Add a comment..."
+                  />
+                  <button type="submit" disabled={!commentDraft.trim() || commentBusy || selectedPostCommentsLoading} aria-label="Post comment">
+                    <Icon name="send" size={17} />
+                  </button>
+                </form>
+              </footer>
+            </div>
+          </section>
+        </div>
+      )}
+      {selectedPost && engagementDialog && (
+        <div
+          className="profile-engagement-backdrop"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) setEngagementDialog(null)
+          }}
+        >
+          <section
+            className="profile-engagement-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="profile-engagement-title"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <header className="profile-engagement-heading">
+              <h2 id="profile-engagement-title">
+                {engagementDialog === "likes" ? "Likes" : "Comments"}
+                <span>{engagementDialog === "likes" ? selectedPost.likes_count : selectedPost.comments_count}</span>
+              </h2>
+              <button type="button" onClick={() => setEngagementDialog(null)} aria-label={`Close ${engagementDialog}`}>
+                ×
+              </button>
+            </header>
+            {engagementDialog === "likes" ? (
+              isDatabasePostId(selectedPost.id) ? (
+                <ProfilePostLikersList postId={selectedPost.id} active />
+              ) : (
+                <p className="profile-engagement-status">Likes are available for published posts.</p>
+              )
+            ) : (
+              <>
+                <form onSubmit={(event) => void submitSelectedPostComment(event)} className="profile-engagement-comment-form">
+                  <input
+                    value={commentDraft}
+                    onChange={(event) => setCommentDraft(event.target.value)}
+                    aria-label="Add a comment"
+                    placeholder="Add a comment..."
+                  />
+                  <button type="submit" disabled={!commentDraft.trim() || commentBusy || selectedPostCommentsLoading} aria-label="Post comment">
+                    <Icon name="send" size={17} />
+                  </button>
+                </form>
+                <div className="profile-engagement-comments">
+                  {selectedPostError && <p role="alert" className="profile-engagement-error">{selectedPostError}</p>}
+                  {selectedPostCommentsLoading ? (
+                    <p role="status" className="profile-engagement-status">Loading comments…</p>
+                  ) : selectedPostComments.length ? (
+                    selectedPostComments.map((comment) => (
+                      <article key={comment.id} className={`profile-engagement-comment ${comment.parent_comment_id ? "is-reply" : ""}`}>
+                        <span className="profile-engagement-avatar">
+                          {comment.author_avatar_url
+                            ? <img src={comment.author_avatar_url} alt="" />
+                            : initials(comment.author_full_name)}
+                        </span>
+                        <div>
+                          <p><strong>{comment.author_full_name}</strong> {comment.content}</p>
+                          <time dateTime={comment.created_at}>{new Date(comment.created_at).toLocaleDateString(undefined, { month: "short", day: "numeric" })}</time>
+                        </div>
+                      </article>
+                    ))
+                  ) : (
+                    <div className="profile-engagement-empty">
+                      <span><Icon name="comment" size={19} /></span>
+                      <div><strong>No comments yet</strong><p>Start a thoughtful conversation with the community.</p></div>
+                    </div>
+                  )}
+                </div>
+              </>
+            )}
+          </section>
+        </div>
+      )}
       {followListProfile && (
         <div
           className="follow-list-overlay fixed inset-0 z-[100] grid place-items-center bg-slate-950/45 p-4 backdrop-blur-sm"
