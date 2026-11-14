@@ -1,5 +1,30 @@
 import { FormEvent, useEffect, useRef, useState } from "react"
-import { createConversation, FollowListMember, getCachedOwnProfile, getJoinedCommunityGroups, getOwnProfile, getProfileFollowList, getPublicProfile, getPublicProfileByUsername, JoinedCommunityGroup, OwnProfile, signOutUser, supabase, updateOwnProfile, uploadProfileImage } from "./lib/supabase"
+import {
+  CommunityPost,
+  createConversation,
+  FollowListMember,
+  getCachedOwnProfile,
+  getJoinedCommunityGroups,
+  getMyJobListings,
+  getMyMarketplaceListings,
+  getOwnProfile,
+  getPersonalizedCommunityPosts,
+  getProfileFollowList,
+  getPublicProfile,
+  getPublicProfileByUsername,
+  getRecommendedCommunityGroups,
+  JoinedCommunityGroup,
+  JobListing,
+  MarketplaceListing,
+  OwnProfile,
+  RecommendedCommunityGroup,
+  signOutUser,
+  supabase,
+  toggleCommunityGroupMembership,
+  toggleUserFollow,
+  updateOwnProfile,
+  uploadProfileImage,
+} from "./lib/supabase"
 import { INTEREST_CATEGORIES } from "./lib/interests"
 
 function go(path: string, state: unknown = {}) {
@@ -17,6 +42,17 @@ function Icon({ name, size = 18, className = "" }: { name: string; size?: number
       </>
     ),
     bookmark: <path d="M6 3h12v18l-6-4-6 4Z" />,
+    briefcase: (
+      <>
+        <rect x="3" y="7" width="18" height="14" rx="2" />
+        <path d="M8 7V4h8v3M3 12h18M10 12v2h4v-2" />
+      </>
+    ),
+    building: (
+      <>
+        <path d="M4 21h16M6 21V5l6-2 6 2v16M9 9h.01M15 9h.01M9 13h.01M15 13h.01M10 21v-4h4v4" />
+      </>
+    ),
     calendar: (
       <>
         <rect x="3" y="5" width="18" height="16" rx="2" />
@@ -33,6 +69,12 @@ function Icon({ name, size = 18, className = "" }: { name: string; size?: number
       </>
     ),
     heart: <path d="M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.7l-1.1-1.1a5.5 5.5 0 0 0-7.8 7.8L12 21l8.8-8.6a5.5 5.5 0 0 0 0-7.8Z" />,
+    home: (
+      <>
+        <path d="m3 10 9-7 9 7" />
+        <path d="M5 9v11h14V9M9 20v-6h6v6" />
+      </>
+    ),
     image: (
       <>
         <rect x="3" y="4" width="18" height="16" rx="2" />
@@ -54,6 +96,7 @@ function Icon({ name, size = 18, className = "" }: { name: string; size?: number
         <circle cx="19" cy="12" r="1" />
       </>
     ),
+    plus: <path d="M12 5v14M5 12h14" />,
     search: (
       <>
         <circle cx="11" cy="11" r="7" />
@@ -66,6 +109,12 @@ function Icon({ name, size = 18, className = "" }: { name: string; size?: number
         <circle cx="6" cy="12" r="3" />
         <circle cx="18" cy="19" r="3" />
         <path d="m8.6 10.5 6.8-4M8.6 13.5l6.8 4" />
+      </>
+    ),
+    shop: (
+      <>
+        <path d="M3 10h18l-1.5-6h-15Z" />
+        <path d="M5 10v10h14V10M9 20v-6h6v6" />
       </>
     ),
     user: (
@@ -127,7 +176,6 @@ function Button({ children, onClick, variant = "primary", className = "", type =
   )
 }
 
-const COVER = "https://images.unsplash.com/photo-1643269877099-ea5393b80320?auto=format&fit=crop&w=1800&q=85"
 type ProfileData = NonNullable<ReturnType<typeof getCachedOwnProfile>>
 
 type UserPost = {
@@ -140,6 +188,16 @@ type UserPost = {
   likes_count: number
   comments_count: number
   interest_tags: string[]
+}
+
+type ProfileActivity = {
+  id: string
+  type: "post" | "job" | "marketplace"
+  title: string
+  detail: string
+  createdAt: string
+  status?: string
+  post?: UserPost
 }
 
 type ProfilePageCache = {
@@ -193,12 +251,16 @@ function initials(name: string) {
   return name.split(/\s+/).map((part) => part[0]).join("").slice(0, 2).toUpperCase()
 }
 
+function normalizeProfileUsername(username: string) {
+  return username.replace(/\.gwl$/i, "")
+}
+
 function postForDetail(post: UserPost, profile: Pick<OwnProfile, "id" | "full_name" | "username" | "avatar_url">) {
   return {
     id: post.id,
     createdAt: post.created_at,
     name: profile.full_name,
-    handle: `@${profile.username}`,
+    handle: `@${normalizeProfileUsername(profile.username)}.gwl`,
     avatar: initials(profile.full_name),
     avatarUrl: profile.avatar_url,
     time: new Date(post.created_at).toLocaleDateString(),
@@ -236,7 +298,20 @@ export default function ProfilePage({ onLogout, profileSlug }: { onLogout?: () =
   const [followListError, setFollowListError] = useState("")
   const [startingConversation, setStartingConversation] = useState(false)
   const [conversationError, setConversationError] = useState("")
-  const [mobileProfileTab, setMobileProfileTab] = useState<"posts" | "about">("posts")
+  const [isFollowing, setIsFollowing] = useState(false)
+  const [followBusy, setFollowBusy] = useState(false)
+  const [followError, setFollowError] = useState("")
+  const [profileSection, setProfileSection] = useState<"overview" | "activity" | "listings" | "communities" | "about">("activity")
+  const [accountMenuOpen, setAccountMenuOpen] = useState(false)
+  const [shareStatus, setShareStatus] = useState("")
+  const [myJobs, setMyJobs] = useState<JobListing[]>([])
+  const [myMarketplaceListings, setMyMarketplaceListings] = useState<MarketplaceListing[]>([])
+  const [recommendedGroups, setRecommendedGroups] = useState<RecommendedCommunityGroup[]>([])
+  const [suggestedPeople, setSuggestedPeople] = useState<CommunityPost[]>([])
+  const [hubLoading, setHubLoading] = useState(false)
+  const [hubError, setHubError] = useState("")
+  const [joiningGroupId, setJoiningGroupId] = useState("")
+  const [followingSuggestionId, setFollowingSuggestionId] = useState("")
   const isOwnProfile = Boolean(profile && viewerId && profile.id === viewerId)
 
   useEffect(() => {
@@ -261,6 +336,7 @@ export default function ProfilePage({ onLogout, profileSlug }: { onLogout?: () =
   }, [followListProfile, followListType])
 
   const handleLogout = async () => {
+    setAccountMenuOpen(false)
     setLoggingOut(true)
     setLogoutError("")
     try {
@@ -285,6 +361,42 @@ export default function ProfilePage({ onLogout, profileSlug }: { onLogout?: () =
       setConversationError(reason instanceof Error ? reason.message : "Could not start this conversation.")
     } finally {
       setStartingConversation(false)
+    }
+  }
+
+  const toggleFollow = async () => {
+    if (!profile || isOwnProfile || followBusy) return
+    setFollowBusy(true)
+    setFollowError("")
+    try {
+      await toggleUserFollow(profile.id, isFollowing)
+      setIsFollowing(!isFollowing)
+      setStats((current) => ({
+        ...current,
+        followers: Math.max(0, current.followers + (isFollowing ? -1 : 1)),
+      }))
+      window.dispatchEvent(new Event("gwalior:feed-preferences-changed"))
+    } catch (reason) {
+      setFollowError(reason instanceof Error ? reason.message : "Could not update your follow.")
+    } finally {
+      setFollowBusy(false)
+    }
+  }
+
+  const shareProfile = async () => {
+    if (!profile) return
+    setShareStatus("")
+    const url = `${window.location.origin}/profile/${encodeURIComponent(normalizeProfileUsername(profile.username))}`
+    try {
+      if (typeof navigator.share === "function") {
+        await navigator.share({ title: `${profile.full_name} on GwaliorWale`, url })
+        return
+      }
+      await navigator.clipboard.writeText(url)
+      setShareStatus("Profile link copied")
+    } catch (reason) {
+      if (reason instanceof DOMException && reason.name === "AbortError") return
+      setShareStatus(reason instanceof Error ? reason.message : "Could not share this profile.")
     }
   }
 
@@ -317,17 +429,26 @@ export default function ProfilePage({ onLogout, profileSlug }: { onLogout?: () =
 
         if (!viewingOwnProfile) {
           const publicProfile = resolvedPublicProfile ?? await getPublicProfile(targetProfileId)
-          const postsResult = await supabase
-            .from("posts")
-            .select("id, content, category, location, image_url, created_at, likes_count, comments_count, interest_tags")
-            .eq("user_id", publicProfile.id)
-            .eq("visibility", "public")
-            .is("group_id", null)
-            .order("created_at", { ascending: false })
+          const [postsResult, followResult] = await Promise.all([
+            supabase
+              .from("posts")
+              .select("id, content, category, location, image_url, created_at, likes_count, comments_count, interest_tags")
+              .eq("user_id", publicProfile.id)
+              .eq("visibility", "public")
+              .is("group_id", null)
+              .order("created_at", { ascending: false }),
+            supabase
+              .from("user_follows")
+              .select("follower_id", { count: "exact", head: true })
+              .eq("follower_id", user.id)
+              .eq("following_id", publicProfile.id),
+          ])
           if (postsResult.error) throw postsResult.error
+          if (followResult.error) throw followResult.error
           if (!active) return
           setProfile(publicProfile as ProfileViewData)
           setPosts(postsResult.data as UserPost[])
+          setIsFollowing((followResult.count ?? 0) > 0)
           setCommunities([])
           setStats({
             posts: publicProfile.posts_count,
@@ -378,6 +499,75 @@ export default function ProfilePage({ onLogout, profileSlug }: { onLogout?: () =
     return () => { active = false }
   }, [profileSlug])
 
+  useEffect(() => {
+    if (!isOwnProfile) return
+    let active = true
+    setHubLoading(true)
+    setHubError("")
+
+    Promise.allSettled([
+      getMyJobListings(),
+      getMyMarketplaceListings(),
+      getRecommendedCommunityGroups(4),
+      getPersonalizedCommunityPosts("for_you", 20),
+    ]).then(([jobsResult, listingsResult, groupsResult, peopleResult]) => {
+      if (!active) return
+      const errors: string[] = []
+      if (jobsResult.status === "fulfilled") setMyJobs(jobsResult.value)
+      else errors.push("job listings")
+      if (listingsResult.status === "fulfilled") setMyMarketplaceListings(listingsResult.value)
+      else errors.push("marketplace listings")
+      if (groupsResult.status === "fulfilled") setRecommendedGroups(groupsResult.value)
+      else errors.push("suggested communities")
+      if (peopleResult.status === "fulfilled") {
+        const uniquePeople = new Map<string, CommunityPost>()
+        for (const post of peopleResult.value) {
+          if (post.user_id !== viewerId && !post.following_by_me && !uniquePeople.has(post.user_id)) {
+            uniquePeople.set(post.user_id, post)
+          }
+        }
+        setSuggestedPeople(Array.from(uniquePeople.values()).slice(0, 4))
+      } else errors.push("suggested people")
+      if (errors.length) setHubError(`Could not load ${errors.join(", ")}.`)
+    }).finally(() => {
+      if (active) setHubLoading(false)
+    })
+
+    return () => { active = false }
+  }, [isOwnProfile, viewerId])
+
+  const joinRecommendedGroup = async (group: RecommendedCommunityGroup) => {
+    if (joiningGroupId) return
+    setJoiningGroupId(group.id)
+    setHubError("")
+    try {
+      await toggleCommunityGroupMembership(group.id, group.joined_by_me)
+      setRecommendedGroups((current) => current.map((item) => item.id === group.id
+        ? { ...item, joined_by_me: !item.joined_by_me, member_count: Math.max(0, item.member_count + (item.joined_by_me ? -1 : 1)) }
+        : item))
+    } catch (reason) {
+      setHubError(reason instanceof Error ? reason.message : "Could not update your community membership.")
+    } finally {
+      setJoiningGroupId("")
+    }
+  }
+
+  const followSuggestedPerson = async (person: CommunityPost) => {
+    if (followingSuggestionId) return
+    setFollowingSuggestionId(person.user_id)
+    setHubError("")
+    try {
+      await toggleUserFollow(person.user_id, false)
+      setSuggestedPeople((current) => current.filter((item) => item.user_id !== person.user_id))
+      setStats((current) => ({ ...current, following: current.following + 1 }))
+      window.dispatchEvent(new Event("gwalior:feed-preferences-changed"))
+    } catch (reason) {
+      setHubError(reason instanceof Error ? reason.message : "Could not follow this member.")
+    } finally {
+      setFollowingSuggestionId("")
+    }
+  }
+
   if (loading) {
     return <main className="section min-h-[50vh]"><p className="text-sm text-slate-500">Loading profile...</p></main>
   }
@@ -391,90 +581,573 @@ export default function ProfilePage({ onLogout, profileSlug }: { onLogout?: () =
   }
 
   const location = profile.city ? `${profile.city}, Gwalior` : "Gwalior"
+  const activeSection = isOwnProfile || !["overview", "listings", "communities"].includes(profileSection)
+    ? profileSection
+    : "activity"
+  const visibleCommunities = activeSection === "activity" ? communities.slice(0, 3) : communities
+  const profileTabs = isOwnProfile
+    ? [
+        { id: "activity" as const, label: "Posts", icon: "image" },
+        { id: "listings" as const, label: "Listings", icon: "briefcase" },
+        { id: "communities" as const, label: "Communities", icon: "users" },
+        { id: "about" as const, label: "About", icon: "user" },
+        { id: "overview" as const, label: "Local hub", icon: "home" },
+      ]
+    : [
+        { id: "activity" as const, label: "Posts", icon: "image" },
+        { id: "about" as const, label: "About", icon: "user" },
+      ]
+  const recentActivities: ProfileActivity[] = [
+    ...posts.map((post) => ({
+      id: post.id,
+      type: "post" as const,
+      title: post.content,
+      detail: `${post.category} · ${post.location}`,
+      createdAt: post.created_at,
+      post,
+    })),
+    ...myJobs.map((job) => ({
+      id: job.id,
+      type: "job" as const,
+      title: job.title,
+      detail: `${job.company} · ${job.location}`,
+      createdAt: job.created_at,
+      status: job.status,
+    })),
+    ...myMarketplaceListings.map((listing) => ({
+      id: listing.id,
+      type: "marketplace" as const,
+      title: listing.title,
+      detail: `${listing.locality} · ${listing.listing_type === "sell" ? "For sale" : listing.listing_type}`,
+      createdAt: listing.created_at,
+      status: listing.status,
+    })),
+  ].sort((first, second) => new Date(second.createdAt).getTime() - new Date(first.createdAt).getTime())
+  const profileTopics = [...new Set(posts.flatMap((post) => post.interest_tags ?? []))].slice(0, 6)
 
   return (
-    <div className={`profile-page bg-[#f4f6fb] pb-24 text-[#172033] ${mobileProfileTab === "about" ? "profile-about-active" : ""}`}>
-      <div className="profile-cover relative border-b border-slate-200 bg-white">
-        <div className="h-56 sm:h-72">
-          <img src={profile.banner_url || COVER} alt="Profile cover" className="h-full w-full object-cover" />
-        </div>
-        <div className="absolute inset-0 bg-gradient-to-t from-[#0f172a]/55 via-[#0f172a]/10 to-transparent" />
-      </div>
-
+    <div className={`profile-page bg-[#f4f6fb] pb-24 text-[#172033] ${activeSection === "about" ? "profile-about-active" : ""}`}>
       <main className="profile-main mx-auto max-w-[1280px] px-4 pb-10 pt-0 sm:px-6">
         {error && <p role="status" className="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">Showing saved profile data. Could not refresh it: {error}</p>}
-        <div className="profile-intro -mt-16 sm:-mt-12">
-          <div className="profile-intro-layout flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
-            <div className="profile-identity flex items-end gap-4">
-              <div className="profile-avatar relative grid h-24 w-24 place-items-center overflow-hidden rounded-[28px] border-4 border-white bg-gradient-to-br from-blue-700 via-blue-500 to-sky-300 text-3xl font-black text-white shadow-lg shadow-blue-500/20 sm:h-28 sm:w-28">
+        <div className="profile-intro">
+          <div className="profile-intro-layout">
+            <div className="profile-identity">
+              <div className="profile-avatar relative grid place-items-center overflow-hidden bg-gradient-to-br from-blue-700 via-blue-500 to-sky-300 text-3xl font-black text-white">
                 {profile.avatar_url ? (
                   <img src={profile.avatar_url} alt={`${profile.full_name} profile`} className="absolute inset-0 h-full w-full object-cover" />
                 ) : initials(profile.full_name)}
               </div>
 
-              <div className="profile-name-block pb-2">
-                <div className="flex items-center gap-2">
-                  <h1 className="profile-name text-2xl font-extrabold tracking-[-.04em] sm:text-3xl">{profile.full_name}</h1>
-                  <span className="inline-flex items-center justify-center rounded-full bg-blue-100 p-1 text-blue-600">
-                    <Icon name="verified" size={16} />
-                  </span>
-                </div>
-                <p className="profile-handle mt-1 text-sm text-slate-500">
-                  @{profile.username}<span className="profile-handle-suffix">.gwl</span><span className="profile-handle-location"> · {location}</span>
+              <div className="profile-name-block">
+                <h1 className="profile-name">{profile.full_name}</h1>
+                <p className="profile-handle">
+                  @{normalizeProfileUsername(profile.username)}<span className="profile-handle-suffix">.gwl</span>
                 </p>
+                <div className="profile-header-meta">
+                  <span><Icon name="location" size={14} />{location}</span>
+                  <span><Icon name="calendar" size={14} />{formatJoinDate(profile.created_at)}</span>
+                </div>
+
+                <div className="profile-summary-row">
+                  <div className="profile-stats">
+                    <div className="profile-stat">
+                      <div>{stats.posts}</div>
+                      <div>posts</div>
+                    </div>
+                    <button type="button" onClick={() => { setFollowListProfile({ id: profile.id, name: profile.full_name }); setFollowListType("followers") }} className="profile-stat" aria-label={`View ${stats.followers} followers`}>
+                      <div>{stats.followers}</div>
+                      <div>followers</div>
+                    </button>
+                    <button type="button" onClick={() => { setFollowListProfile({ id: profile.id, name: profile.full_name }); setFollowListType("following") }} className="profile-stat" aria-label={`View ${stats.following} following`}>
+                      <div>{stats.following}</div>
+                      <div>following</div>
+                    </button>
+                  </div>
+                  {profile.bio ? (
+                    <p className="profile-bio">{profile.bio}</p>
+                  ) : isOwnProfile ? (
+                    <button type="button" onClick={() => go("/profile/edit")} className="profile-bio-empty">
+                      Add a short introduction
+                      <Icon name="edit" size={14} />
+                    </button>
+                  ) : null}
+                </div>
+                {logoutError && <p className="profile-logout-error" role="alert">{logoutError}</p>}
               </div>
             </div>
 
             {isOwnProfile && (
-              <div className="profile-actions profile-actions-desktop flex flex-wrap gap-2">
-                <Button variant="outline" onClick={() => go("/profile/edit")} className="px-4 py-2.5">
+              <div className="profile-actions profile-actions-desktop">
+                <Button variant="outline" onClick={() => go("/profile/edit")}>
                   <Icon name="edit" size={15} />
                   Edit profile
                 </Button>
-                <Button variant="outline" onClick={handleLogout} disabled={loggingOut} className="px-4 py-2.5">
-                  {loggingOut ? "Logging out..." : "Log out"}
+                <Button variant="outline" onClick={() => void shareProfile()}>
+                  <Icon name="share" size={15} />
+                  Share profile
                 </Button>
+                <div className="profile-menu-wrap">
+                  <button
+                    type="button"
+                    className="profile-menu-trigger"
+                    aria-label="More account options"
+                    aria-haspopup="menu"
+                    aria-expanded={accountMenuOpen}
+                    onClick={() => setAccountMenuOpen((open) => !open)}
+                  >
+                    <Icon name="more" size={18} />
+                  </button>
+                  {accountMenuOpen && (
+                    <div className="profile-menu" role="menu">
+                      <button type="button" role="menuitem" onClick={() => void handleLogout()} disabled={loggingOut}>
+                        {loggingOut ? "Logging out..." : "Log out"}
+                      </button>
+                    </div>
+                  )}
+                </div>
               </div>
             )}
             {!isOwnProfile && (
-              <div className="profile-actions flex flex-col items-start gap-2 lg:items-end">
+              <div className="profile-actions">
+                <Button variant={isFollowing ? "outline" : "primary"} onClick={() => void toggleFollow()} disabled={followBusy}>
+                  <Icon name={isFollowing ? "check" : "users"} size={15} />
+                  {followBusy ? "Updating..." : isFollowing ? "Following" : "Follow"}
+                </Button>
+                <Button variant="outline" onClick={() => void shareProfile()}>
+                  <Icon name="share" size={15} />
+                  Share
+                </Button>
                 <button type="button" onClick={() => void startConversation()} disabled={startingConversation} className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-2.5 text-xs font-extrabold text-white shadow-sm transition hover:bg-blue-700 disabled:opacity-60">
                   <Icon name="comment" size={15} />
                   {startingConversation ? "Opening chat…" : "Message"}
                 </button>
-                {conversationError && <p role="alert" className="max-w-xs text-xs text-red-600 lg:text-right">{conversationError}</p>}
+                {followError && <p role="alert" className="max-w-xs text-xs text-red-600">{followError}</p>}
+                {conversationError && <p role="alert" className="max-w-xs text-xs text-red-600">{conversationError}</p>}
               </div>
             )}
           </div>
-        </div>
-        <p className="profile-bio mt-4 text-sm leading-6 text-slate-600">{profile.bio || (isOwnProfile ? "Add a short bio to tell your community about yourself." : "No bio added yet.")}</p>
-        {logoutError && <p className="profile-logout-error mt-4 text-right text-xs text-red-600">{logoutError}</p>}
-
-        <div className="profile-stats mt-5 grid grid-cols-3 gap-2 border-y border-slate-200 py-3 text-center">
-          <div className="profile-stat">
-            <div className="text-lg font-extrabold text-[#172033]">{stats.posts}</div>
-            <div className="mt-1 text-[10px] font-bold uppercase tracking-wide text-slate-500">Posts</div>
-          </div>
-          <button type="button" onClick={() => { setFollowListProfile({ id: profile.id, name: profile.full_name }); setFollowListType("followers") }} className="profile-stat rounded-xl transition hover:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500" aria-label={`View ${stats.followers} followers`}>
-            <div className="text-lg font-extrabold text-[#172033]">{stats.followers}</div>
-            <div className="mt-1 text-[10px] font-bold uppercase tracking-wide text-slate-500">Followers</div>
-          </button>
-          <button type="button" onClick={() => { setFollowListProfile({ id: profile.id, name: profile.full_name }); setFollowListType("following") }} className="profile-stat rounded-xl transition hover:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500" aria-label={`View ${stats.following} following`}>
-            <div className="text-lg font-extrabold text-[#172033]">{stats.following}</div>
-            <div className="mt-1 text-[10px] font-bold uppercase tracking-wide text-slate-500">Following</div>
-          </button>
+          {shareStatus && <p className="profile-share-status" role={shareStatus === "Profile link copied" ? "status" : "alert"}>{shareStatus}</p>}
         </div>
 
-        <div className="profile-mobile-tabs" role="tablist" aria-label="Profile sections">
-          <button type="button" role="tab" aria-selected={mobileProfileTab === "posts"} onClick={() => setMobileProfileTab("posts")}><Icon name="image" size={17} />Posts</button>
-          <button type="button" role="tab" aria-selected={mobileProfileTab === "about"} onClick={() => setMobileProfileTab("about")}><Icon name="user" size={17} />About</button>
-        </div>
+        <nav className="profile-section-nav" aria-label="Profile sections">
+          {profileTabs.map((tab) => (
+            <button
+              key={tab.id}
+              type="button"
+              onClick={() => setProfileSection(tab.id)}
+              className={activeSection === tab.id ? "is-active" : ""}
+              aria-current={activeSection === tab.id ? "page" : undefined}
+            >
+              <Icon name={tab.icon} size={16} />
+              {tab.label}
+              {tab.id === "activity" && <span>{posts.length}</span>}
+              {tab.id === "listings" && <span>{myJobs.length + myMarketplaceListings.length}</span>}
+              {tab.id === "communities" && <span>{communities.length}</span>}
+            </button>
+          ))}
+        </nav>
 
-        <div className="profile-details mt-6 grid gap-6 xl:grid-cols-[320px_minmax(0,1fr)]">
+        {isOwnProfile && activeSection === "overview" && (
+          <section className="profile-hub" aria-labelledby="profile-hub-title">
+            <header className="profile-hub-heading">
+              <div>
+                <p className="profile-hub-eyebrow">YOUR LOCAL FOOTPRINT</p>
+                <h2 id="profile-hub-title">Your GwaliorWale at a glance</h2>
+                <p>A home for your contributions, opportunities, and local connections.</p>
+              </div>
+              <button type="button" onClick={() => go("/community")} className="profile-hub-community-link">
+                Open community <Icon name="chevron" size={15} />
+              </button>
+            </header>
+
+            <div className="profile-overview-stats" aria-label="Your activity summary">
+              <button type="button" onClick={() => setProfileSection("activity")}>
+                <span className="profile-overview-stat-icon profile-hub-action-blue"><Icon name="image" size={17} /></span>
+                <span><strong>{posts.length}</strong><small>community posts</small></span>
+              </button>
+              <button type="button" onClick={() => setProfileSection("listings")}>
+                <span className="profile-overview-stat-icon profile-hub-action-violet"><Icon name="briefcase" size={17} /></span>
+                <span><strong>{myJobs.filter((job) => job.status === "active").length}</strong><small>active jobs</small></span>
+              </button>
+              <button type="button" onClick={() => setProfileSection("listings")}>
+                <span className="profile-overview-stat-icon profile-hub-action-amber"><Icon name="shop" size={17} /></span>
+                <span><strong>{myMarketplaceListings.filter((listing) => listing.status === "active").length}</strong><small>items available</small></span>
+              </button>
+              <button type="button" onClick={() => setProfileSection("communities")}>
+                <span className="profile-overview-stat-icon profile-hub-action-green"><Icon name="users" size={17} /></span>
+                <span><strong>{communities.length}</strong><small>communities</small></span>
+              </button>
+            </div>
+
+            <div className="profile-hub-actions" aria-label="Community actions">
+              <button type="button" onClick={() => go("/create-post")} className="profile-hub-action">
+                <span className="profile-hub-action-icon profile-hub-action-blue"><Icon name="plus" size={19} /></span>
+                <span><strong>Start a conversation</strong><small>Share an update with Gwalior</small></span>
+                <Icon name="chevron" size={16} className="profile-hub-arrow" />
+              </button>
+              <button type="button" onClick={() => go("/post-job")} className="profile-hub-action">
+                <span className="profile-hub-action-icon profile-hub-action-violet"><Icon name="briefcase" size={19} /></span>
+                <span><strong>Post a job</strong><small>Help local talent find work</small></span>
+                <Icon name="chevron" size={16} className="profile-hub-arrow" />
+              </button>
+              <button type="button" onClick={() => go("/buy-sell")} className="profile-hub-action">
+                <span className="profile-hub-action-icon profile-hub-action-amber"><Icon name="shop" size={19} /></span>
+                <span><strong>Buy &amp; sell locally</strong><small>List an item or browse nearby</small></span>
+                <Icon name="chevron" size={16} className="profile-hub-arrow" />
+              </button>
+              <button type="button" onClick={() => go("/list-business")} className="profile-hub-action">
+                <span className="profile-hub-action-icon profile-hub-action-green"><Icon name="building" size={19} /></span>
+                <span><strong>Add your business</strong><small>Reach people across the city</small></span>
+                <Icon name="chevron" size={16} className="profile-hub-arrow" />
+              </button>
+            </div>
+
+            {hubError && <p className="profile-hub-error" role="alert">{hubError}</p>}
+
+            <div className="profile-hub-content">
+              <section className="profile-hub-panel profile-hub-listings" aria-labelledby="profile-listings-title">
+                <header className="profile-hub-panel-heading">
+                  <div>
+                    <h3 id="profile-listings-title">Your local listings</h3>
+                    <p>{myJobs.length} jobs · {myMarketplaceListings.length} marketplace items</p>
+                  </div>
+                  <button type="button" onClick={() => setProfileSection("listings")} aria-label="View all your listings"><Icon name="chevron" size={16} /></button>
+                </header>
+                {hubLoading ? (
+                  <p className="profile-hub-empty" role="status">Loading your listings…</p>
+                ) : myJobs.length || myMarketplaceListings.length ? (
+                  <div className="profile-hub-list">
+                    {myJobs.slice(0, 2).map((job) => (
+                      <button type="button" key={job.id} onClick={() => go(`/job/${job.id}`)} className="profile-hub-listing">
+                        <span className="profile-hub-listing-icon profile-hub-action-violet"><Icon name="briefcase" size={16} /></span>
+                        <span className="profile-hub-listing-copy"><strong>{job.title}</strong><small>{job.company} · {job.location}</small>{job.salary && <small className="profile-listing-submeta">{job.salary}</small>}</span>
+                        <span className={`profile-hub-status ${job.status === "active" ? "is-active" : ""}`}>{job.status}</span>
+                      </button>
+                    ))}
+                    {myMarketplaceListings.slice(0, 2).map((listing) => (
+                      <button type="button" key={listing.id} onClick={() => go("/buy-sell")} className="profile-hub-listing">
+                        <span className="profile-hub-listing-icon profile-hub-action-amber"><Icon name="shop" size={16} /></span>
+                        <span className="profile-hub-listing-copy"><strong>{listing.title}</strong><small>{listing.locality} · {listing.listing_type === "sell" ? "For sale" : listing.listing_type}</small><small className="profile-listing-price">₹{Number(listing.price).toLocaleString("en-IN")}</small></span>
+                        <span className={`profile-hub-status ${listing.status === "active" ? "is-active" : ""}`}>{listing.status}</span>
+                      </button>
+                    ))}
+                    <button type="button" onClick={() => go("/businesses")} className="profile-hub-directory-link">
+                      Explore the Gwalior business directory <Icon name="chevron" size={14} />
+                    </button>
+                  </div>
+                ) : (
+                  <div className="profile-hub-empty">
+                    <p>No jobs or marketplace items posted yet.</p>
+                    <div className="profile-hub-empty-actions">
+                      <button type="button" onClick={() => go("/post-job")}>Post a job</button>
+                      <button type="button" onClick={() => go("/buy-sell")}>List an item</button>
+                    </div>
+                  </div>
+                )}
+              </section>
+
+              <div className="profile-hub-discovery-column">
+              <section className="profile-hub-panel profile-hub-communities" aria-labelledby="profile-communities-title">
+                <header className="profile-hub-panel-heading">
+                  <div>
+                    <h3 id="profile-communities-title">Your communities</h3>
+                    <p>{communities.length} local circles you’re part of</p>
+                  </div>
+                  <button type="button" onClick={() => setProfileSection("communities")} aria-label="View all your communities"><Icon name="chevron" size={16} /></button>
+                </header>
+                {hubLoading ? (
+                  <p className="profile-hub-empty" role="status">Finding communities…</p>
+                ) : communities.length ? (
+                  <div className="profile-hub-community-preview">
+                    {communities.slice(0, 3).map((community) => (
+                      <button type="button" key={community.id} onClick={() => go("/community")} className="profile-hub-community-card">
+                        <span className="profile-hub-community-mark"><Icon name="users" size={16} /></span>
+                        <span className="profile-hub-listing-copy"><strong>{community.name}</strong><small>{community.description}</small></span>
+                        <Icon name="chevron" size={14} className="profile-hub-arrow" />
+                      </button>
+                    ))}
+                    {communities.length > 3 && (
+                      <button type="button" onClick={() => setProfileSection("communities")} className="profile-hub-panel-footer">
+                        See all {communities.length} communities <Icon name="chevron" size={14} />
+                      </button>
+                    )}
+                  </div>
+                ) : (
+                  <div className="profile-hub-empty">
+                    <p>You haven’t joined a local community yet.</p>
+                    <button type="button" onClick={() => go("/community")}>Discover communities</button>
+                  </div>
+                )}
+                <div className="profile-hub-suggested">
+                  <div className="profile-hub-suggested-heading">
+                    <h4>Suggested for you</h4>
+                    <span>{recommendedGroups.length}</span>
+                  </div>
+                  {hubLoading ? (
+                    <p className="profile-hub-suggested-empty">Finding groups that match your interests…</p>
+                  ) : recommendedGroups.length ? (
+                    <div className="profile-hub-list">
+                      {recommendedGroups.slice(0, 2).map((group) => (
+                        <div key={group.id} className="profile-hub-community">
+                          <span className="profile-hub-community-mark"><Icon name="users" size={16} /></span>
+                          <span className="profile-hub-listing-copy"><strong>{group.name}</strong><small>{group.member_count} members{group.matching_interests.length ? ` · ${group.matching_interests.slice(0, 2).join(", ")}` : ""}</small></span>
+                          <button type="button" onClick={() => void joinRecommendedGroup(group)} disabled={joiningGroupId === group.id} className={`profile-hub-join ${group.joined_by_me ? "is-joined" : ""}`}>
+                            {joiningGroupId === group.id ? "…" : group.joined_by_me ? "Joined" : "Join"}
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="profile-hub-suggested-empty">
+                      <span>New recommendations appear as you explore local communities.</span>
+                      <button type="button" onClick={() => go("/community")}>Browse groups <Icon name="chevron" size={13} /></button>
+                    </div>
+                  )}
+                </div>
+              </section>
+
+              <section className="profile-hub-panel profile-hub-people" aria-labelledby="profile-people-title">
+                <header className="profile-hub-panel-heading">
+                  <div>
+                    <h3 id="profile-people-title">People to know</h3>
+                    <p>Local voices from your community feed</p>
+                  </div>
+                  <button type="button" onClick={() => go("/community")} aria-label="Meet local people"><Icon name="chevron" size={16} /></button>
+                </header>
+                {hubLoading ? (
+                  <p className="profile-hub-empty" role="status">Finding local people…</p>
+                ) : suggestedPeople.length ? (
+                  <div className="profile-hub-list">
+                    {suggestedPeople.slice(0, 3).map((person) => (
+                      <div key={person.user_id} className="profile-hub-person">
+                        <button type="button" onClick={() => go(`/profile/${encodeURIComponent(normalizeProfileUsername(person.username))}`)} className="profile-hub-person-profile">
+                          <span className="profile-hub-person-avatar">
+                            {person.avatar_url ? <img src={person.avatar_url} alt="" /> : initials(person.full_name)}
+                          </span>
+                          <span className="profile-hub-listing-copy"><strong>{person.full_name}</strong><small>@{normalizeProfileUsername(person.username)} · {person.location}</small></span>
+                        </button>
+                        <button type="button" onClick={() => void followSuggestedPerson(person)} disabled={followingSuggestionId === person.user_id} className="profile-hub-join">
+                          {followingSuggestionId === person.user_id ? "…" : "Follow"}
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="profile-hub-empty profile-hub-compact-empty">
+                    <span className="profile-hub-empty-icon"><Icon name="users" size={17} /></span>
+                    <div><p>Meet active members from around Gwalior.</p><button type="button" onClick={() => go("/community")}>Explore people <Icon name="chevron" size={13} /></button></div>
+                  </div>
+                )}
+              </section>
+              </div>
+            </div>
+            <section className="profile-overview-activity" aria-labelledby="profile-overview-activity-title">
+              <header>
+                <div>
+                  <p className="profile-hub-eyebrow">YOUR CONTRIBUTIONS</p>
+                  <h3 id="profile-overview-activity-title">Latest from you</h3>
+                </div>
+                <button type="button" onClick={() => setProfileSection("activity")}>View all <Icon name="chevron" size={14} /></button>
+              </header>
+              {hubLoading ? (
+                <p className="profile-hub-empty" role="status">Loading your recent activity…</p>
+              ) : recentActivities.length ? (
+                <div className="profile-overview-activity-list">
+                  {recentActivities.slice(0, 4).map((activity) => (
+                    <button
+                      type="button"
+                      key={`${activity.type}-${activity.id}`}
+                      onClick={() => {
+                        if (activity.type === "post" && activity.post) {
+                          go(`/post/${activity.id}?from=${encodeURIComponent(window.location.pathname)}`, {
+                            post: postForDetail(activity.post, profile),
+                            feedPosts: posts.map((item) => postForDetail(item, profile)),
+                          })
+                        } else {
+                          go(activity.type === "job" ? `/job/${activity.id}` : "/buy-sell")
+                        }
+                      }}
+                    >
+                      <span className={`profile-overview-activity-icon profile-hub-action-${activity.type === "post" ? "blue" : activity.type === "job" ? "violet" : "amber"}`}>
+                        <Icon name={activity.type === "post" ? "image" : activity.type === "job" ? "briefcase" : "shop"} size={16} />
+                      </span>
+                      <span className="profile-overview-activity-copy">
+                        <strong>{activity.title}</strong>
+                        <small>{activity.detail}</small>
+                      </span>
+                      <span className="profile-overview-activity-date">{new Date(activity.createdAt).toLocaleDateString()}</span>
+                      <Icon name="chevron" size={15} className="profile-hub-arrow" />
+                    </button>
+                  ))}
+                </div>
+              ) : (
+                <div className="profile-hub-empty">
+                  <p>Your local story starts with a post, a job, or an item to share.</p>
+                  <div className="profile-hub-empty-actions">
+                    <button type="button" onClick={() => go("/create-post")}>Create a post</button>
+                    <button type="button" onClick={() => go("/buy-sell")}>List an item</button>
+                  </div>
+                </div>
+              )}
+            </section>
+          </section>
+        )}
+
+        {isOwnProfile && activeSection === "listings" && (
+          <section className="profile-directory-section" aria-labelledby="profile-listings-page-title">
+            <header className="profile-directory-heading">
+              <div><p className="profile-hub-eyebrow">YOUR LOCAL COMMERCE</p><h2 id="profile-listings-page-title">Listings &amp; opportunities</h2><p>Keep track of the work and items you’ve shared with Gwalior.</p></div>
+              <div className="profile-directory-actions">
+                <Button variant="outline" onClick={() => go("/post-job")}><Icon name="briefcase" size={15} />Post a job</Button>
+                <Button variant="outline" onClick={() => go("/buy-sell")}><Icon name="plus" size={15} />List an item</Button>
+              </div>
+            </header>
+            {hubError && <p className="profile-hub-error" role="alert">{hubError}</p>}
+            <div className="profile-directory-metrics" aria-label="Listing summary">
+              <div><span className="profile-directory-metric-icon profile-hub-action-violet"><Icon name="briefcase" size={17} /></span><span><strong>{myJobs.length}</strong><small>jobs posted</small></span></div>
+              <div><span className="profile-directory-metric-icon profile-hub-action-green"><Icon name="check" size={17} /></span><span><strong>{myJobs.filter((job) => job.status === "active").length}</strong><small>currently active</small></span></div>
+              <div><span className="profile-directory-metric-icon profile-hub-action-amber"><Icon name="shop" size={17} /></span><span><strong>{myMarketplaceListings.length}</strong><small>marketplace items</small></span></div>
+            </div>
+            <div className="profile-directory-grid">
+              <section className="profile-hub-panel">
+                <header className="profile-hub-panel-heading"><div><h3>Jobs you’ve posted</h3><p>{myJobs.length} total</p></div><button type="button" onClick={() => go("/jobs")} aria-label="Browse jobs"><Icon name="chevron" size={16} /></button></header>
+                {hubLoading ? <p className="profile-hub-empty" role="status">Loading your jobs…</p> : myJobs.length ? (
+                  <div className="profile-hub-list">{myJobs.map((job) => (
+                    <button type="button" key={job.id} onClick={() => go(`/job/${job.id}`)} className="profile-hub-listing">
+                      <span className="profile-hub-listing-icon profile-hub-action-violet"><Icon name="briefcase" size={16} /></span>
+                      <span className="profile-hub-listing-copy"><strong>{job.title}</strong><small>{job.company} · {job.location}</small><small className="profile-listing-submeta">{job.employment_type} · {job.workplace_type}{job.salary ? ` · ${job.salary}` : ""}</small></span>
+                      <span className={`profile-hub-status ${job.status === "active" ? "is-active" : ""}`}>{job.status}</span>
+                    </button>
+                  ))}</div>
+                ) : <div className="profile-hub-empty"><p>You haven’t posted a job yet.</p><button type="button" onClick={() => go("/post-job")}>Post a local job</button></div>}
+              </section>
+              <section className="profile-hub-panel">
+                <header className="profile-hub-panel-heading"><div><h3>Buy &amp; sell listings</h3><p>{myMarketplaceListings.length} total</p></div><button type="button" onClick={() => go("/buy-sell")} aria-label="Browse marketplace"><Icon name="chevron" size={16} /></button></header>
+                {hubLoading ? <p className="profile-hub-empty" role="status">Loading your marketplace items…</p> : myMarketplaceListings.length ? (
+                  <div className="profile-hub-list">{myMarketplaceListings.map((listing) => (
+                    <button type="button" key={listing.id} onClick={() => go("/buy-sell")} className="profile-hub-listing">
+                      {listing.image_urls[0] ? <img src={listing.image_urls[0]} alt="" className="profile-listing-thumbnail" loading="lazy" /> : <span className="profile-hub-listing-icon profile-hub-action-amber"><Icon name="shop" size={16} /></span>}
+                      <span className="profile-hub-listing-copy"><strong>{listing.title}</strong><small>{listing.locality} · {listing.listing_type === "sell" ? "For sale" : listing.listing_type}</small><small className="profile-listing-price">₹{Number(listing.price).toLocaleString("en-IN")}{listing.listing_type === "rent" ? " / month" : ""}</small></span>
+                      <span className={`profile-hub-status ${listing.status === "active" ? "is-active" : ""}`}>{listing.status}</span>
+                    </button>
+                  ))}</div>
+                ) : <div className="profile-hub-empty"><p>Give a useful item a new home nearby.</p><button type="button" onClick={() => go("/buy-sell")}>Create a listing</button></div>}
+              </section>
+              <section className="profile-business-prompt">
+                <span className="profile-hub-action-icon profile-hub-action-green"><Icon name="building" size={19} /></span>
+                <div><h3>Have a local business?</h3><p>Add it to the Gwalior directory so nearby people can discover it.</p></div>
+                <Button variant="outline" onClick={() => go("/list-business")}>Add your business <Icon name="chevron" size={14} /></Button>
+              </section>
+            </div>
+          </section>
+        )}
+
+        {isOwnProfile && activeSection === "communities" && (
+          <section className="profile-directory-section" aria-labelledby="profile-communities-page-title">
+            <header className="profile-directory-heading">
+              <div><p className="profile-hub-eyebrow">PEOPLE &amp; INTERESTS</p><h2 id="profile-communities-page-title">Your communities</h2><p>Find your people, meet local voices, and make Gwalior feel smaller.</p></div>
+              <Button variant="outline" onClick={() => go("/community")}><Icon name="users" size={15} />Explore community</Button>
+            </header>
+            {hubError && <p className="profile-hub-error" role="alert">{hubError}</p>}
+            <div className="profile-directory-metrics" aria-label="Community summary">
+              <div><span className="profile-directory-metric-icon profile-hub-action-green"><Icon name="users" size={17} /></span><span><strong>{communities.length}</strong><small>communities joined</small></span></div>
+              <div><span className="profile-directory-metric-icon profile-hub-action-blue"><Icon name="users" size={17} /></span><span><strong>{recommendedGroups.length}</strong><small>groups suggested</small></span></div>
+              <div><span className="profile-directory-metric-icon profile-hub-action-violet"><Icon name="user" size={17} /></span><span><strong>{suggestedPeople.length}</strong><small>people to discover</small></span></div>
+            </div>
+            {hubLoading ? <p className="profile-hub-empty" role="status">Loading your communities…</p> : (
+              <div className="profile-communities-layout">
+                <section className="profile-hub-panel profile-joined-groups" aria-labelledby="joined-groups-title">
+                  <header className="profile-hub-panel-heading">
+                    <div><h3 id="joined-groups-title">The circles you’re part of</h3><p>Your local interests, conversations, and people</p></div>
+                    <span className="profile-community-count">{communities.length}</span>
+                  </header>
+                  {communities.length ? (
+                    <div className="profile-community-card-grid">
+                      {communities.map((community) => (
+                        <button type="button" key={community.id} onClick={() => go("/community")} className="profile-community-detail-card">
+                          <span className="profile-hub-community-mark"><Icon name="users" size={18} /></span>
+                          <span className="profile-hub-listing-copy"><strong>{community.name}</strong><small>{community.description || "A local community on GwaliorWale."}</small></span>
+                          <Icon name="chevron" size={15} className="profile-hub-arrow" />
+                        </button>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="profile-hub-empty profile-hub-compact-empty">
+                      <span className="profile-hub-empty-icon"><Icon name="users" size={18} /></span>
+                      <div><p>You haven’t joined a community yet.</p><button type="button" onClick={() => go("/community")}>Find your first community <Icon name="chevron" size={13} /></button></div>
+                    </div>
+                  )}
+                </section>
+                <aside className="profile-hub-discovery-column">
+                  <section className="profile-hub-panel" aria-labelledby="recommended-groups-title">
+                    <header className="profile-hub-panel-heading">
+                      <div><h3 id="recommended-groups-title">Recommended for you</h3><p>Groups that match your interests</p></div>
+                      <button type="button" onClick={() => go("/community")} aria-label="Browse communities"><Icon name="chevron" size={16} /></button>
+                    </header>
+                    {recommendedGroups.length ? (
+                      <div className="profile-hub-list">{recommendedGroups.map((group) => (
+                        <div key={group.id} className="profile-hub-community">
+                          <span className="profile-hub-community-mark"><Icon name="users" size={17} /></span>
+                          <span className="profile-hub-listing-copy"><strong>{group.name}</strong><small>{group.member_count} members{group.matching_interests.length ? ` · ${group.matching_interests.slice(0, 2).join(", ")}` : ""}</small></span>
+                          <button type="button" onClick={() => void joinRecommendedGroup(group)} disabled={joiningGroupId === group.id} className={`profile-hub-join ${group.joined_by_me ? "is-joined" : ""}`}>
+                            {joiningGroupId === group.id ? "…" : group.joined_by_me ? "Joined" : "Join"}
+                          </button>
+                        </div>
+                      ))}</div>
+                    ) : (
+                      <div className="profile-hub-empty profile-hub-compact-empty">
+                        <span className="profile-hub-empty-icon"><Icon name="users" size={17} /></span>
+                        <div><p>No tailored recommendations yet.</p><button type="button" onClick={() => go("/community")}>Browse all groups <Icon name="chevron" size={13} /></button></div>
+                      </div>
+                    )}
+                  </section>
+                  <section className="profile-hub-panel" aria-labelledby="suggested-people-title">
+                    <header className="profile-hub-panel-heading">
+                      <div><h3 id="suggested-people-title">People to know</h3><p>Meet active local members</p></div>
+                      <button type="button" onClick={() => go("/community")} aria-label="Explore community members"><Icon name="chevron" size={16} /></button>
+                    </header>
+                    {suggestedPeople.length ? (
+                      <div className="profile-hub-list">{suggestedPeople.slice(0, 4).map((person) => (
+                        <div key={person.user_id} className="profile-hub-person">
+                          <button type="button" onClick={() => go(`/profile/${encodeURIComponent(normalizeProfileUsername(person.username))}`)} className="profile-hub-person-profile">
+                            <span className="profile-hub-person-avatar">{person.avatar_url ? <img src={person.avatar_url} alt="" /> : initials(person.full_name)}</span>
+                            <span className="profile-hub-listing-copy"><strong>{person.full_name}</strong><small>@{normalizeProfileUsername(person.username)} · {person.location}</small></span>
+                          </button>
+                          <button type="button" onClick={() => void followSuggestedPerson(person)} disabled={followingSuggestionId === person.user_id} className="profile-hub-join">
+                            {followingSuggestionId === person.user_id ? "…" : "Follow"}
+                          </button>
+                        </div>
+                      ))}</div>
+                    ) : (
+                      <div className="profile-hub-empty profile-hub-compact-empty">
+                        <span className="profile-hub-empty-icon"><Icon name="user" size={17} /></span>
+                        <div><p>Join conversations to meet the people behind them.</p><button type="button" onClick={() => go("/community")}>Meet the community <Icon name="chevron" size={13} /></button></div>
+                      </div>
+                    )}
+                  </section>
+                </aside>
+              </div>
+            )}
+          </section>
+        )}
+
+        <div className={`profile-details profile-section-${activeSection} mt-6 grid gap-6 xl:grid-cols-[320px_minmax(0,1fr)]`}>
           <aside className="profile-sidebar space-y-5">
-            <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
-              <p className="text-xs font-extrabold uppercase tracking-[.14em] text-blue-600">About</p>
-              <p className="profile-about-copy mt-4 text-sm leading-7 text-slate-600">{profile.bio || (isOwnProfile ? "Add a short bio to tell your community about yourself." : "No bio added yet.")}</p>
+            <div className="profile-about-card profile-about-card-summary rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
+              <header className="profile-about-card-heading">
+                <div><p className="profile-hub-eyebrow">MEMBER PROFILE</p><h2>About</h2></div>
+                {isOwnProfile && <Button variant="outline" onClick={() => go("/profile/edit")}><Icon name="edit" size={14} />Edit profile</Button>}
+              </header>
+              {profile.bio ? (
+                <p className="profile-about-copy mt-4 text-sm leading-7 text-slate-600">{profile.bio}</p>
+              ) : isOwnProfile ? (
+                <button type="button" onClick={() => go("/profile/edit")} className="profile-about-copy profile-bio-empty mt-4 text-left">
+                  Add a short introduction
+                  <Icon name="edit" size={14} />
+                </button>
+              ) : (
+                <p className="profile-about-copy mt-4 text-sm leading-7 text-slate-500">No introduction yet.</p>
+              )}
 
               <div className="mt-5 grid grid-cols-3 gap-2 rounded-2xl bg-slate-50 p-3 text-center">
                 <div>
@@ -507,21 +1180,10 @@ export default function ProfilePage({ onLogout, profileSlug }: { onLogout?: () =
                 </button>
               </div>
 
-              <div className="mt-5 space-y-3 text-sm text-slate-600">
-                <div className="flex items-center gap-2">
-                  <Icon name="location" size={14} className="text-blue-600" />
-                  {location}
-                </div>
-                <div className="flex items-center gap-2">
-                  <Icon name="calendar" size={14} className="text-blue-600" />
-                  {formatJoinDate(profile.created_at)}
-                </div>
-                {isOwnProfile && (
-                  <div className="flex items-center gap-2">
-                    <Icon name="bookmark" size={14} className="text-blue-600" />
-                    {profile.phone || "No phone number added"}
-                  </div>
-                )}
+              <div className="profile-about-facts">
+                <div><Icon name="location" size={15} /><span><small>Based in</small><strong>{location}</strong></span></div>
+                <div><Icon name="calendar" size={15} /><span><small>Member since</small><strong>{formatJoinDate(profile.created_at)}</strong></span></div>
+                {isOwnProfile && <div><Icon name="bookmark" size={15} /><span><small>Phone</small><strong>{profile.phone || "Not added yet"}</strong></span></div>}
               </div>
             </div>
 
@@ -531,6 +1193,10 @@ export default function ProfilePage({ onLogout, profileSlug }: { onLogout?: () =
                   <Icon name="edit" size={15} />
                   Edit profile
                 </Button>
+                <Button variant="outline" onClick={() => void shareProfile()} className="px-4 py-2.5">
+                  <Icon name="share" size={15} />
+                  Share profile
+                </Button>
                 <Button variant="outline" onClick={handleLogout} disabled={loggingOut} className="px-4 py-2.5">
                   {loggingOut ? "Logging out..." : "Log out"}
                 </Button>
@@ -538,10 +1204,14 @@ export default function ProfilePage({ onLogout, profileSlug }: { onLogout?: () =
               </div>
             )}
 
-            <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
+            <div className="profile-about-card profile-about-card-interests rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
               <div className="flex items-center justify-between">
                 <h3 className="text-sm font-extrabold text-[#172033]">Interests</h3>
-                <button className="text-[10px] font-extrabold uppercase tracking-wide text-blue-600">View all</button>
+                {isOwnProfile && (
+                  <button onClick={() => go("/profile/edit")} className="text-[10px] font-extrabold uppercase tracking-wide text-blue-600 hover:text-blue-700">
+                    Edit
+                  </button>
+                )}
               </div>
               <div className="mt-4 flex flex-wrap gap-2">
                 {profile.interests.map((item) => (
@@ -554,7 +1224,7 @@ export default function ProfilePage({ onLogout, profileSlug }: { onLogout?: () =
             </div>
 
             {isOwnProfile && (
-            <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
+            <div className="profile-about-card profile-about-card-communities rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
               <div className="flex items-center justify-between">
                 <h3 className="text-sm font-extrabold text-[#172033]">Communities</h3>
                 <span className="rounded-full bg-blue-50 px-2.5 py-1 text-[10px] font-extrabold text-blue-700">
@@ -563,8 +1233,8 @@ export default function ProfilePage({ onLogout, profileSlug }: { onLogout?: () =
               </div>
               {communities.length > 0 ? (
                 <div className="mt-4 space-y-3">
-                  {communities.map((community) => (
-                    <div key={community.id} className="flex items-start gap-3 rounded-2xl bg-slate-50 p-3">
+                  {visibleCommunities.map((community) => (
+                    <button type="button" key={community.id} onClick={() => go("/community")} className="profile-about-community flex items-start gap-3 rounded-2xl bg-slate-50 p-3 text-left">
                       <span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-blue-100 text-blue-700">
                         <Icon name="users" size={17} />
                       </span>
@@ -572,20 +1242,36 @@ export default function ProfilePage({ onLogout, profileSlug }: { onLogout?: () =
                         <p className="text-xs font-extrabold text-[#172033]">{community.name}</p>
                         <p className="mt-1 text-[10px] leading-5 text-slate-500">{community.description}</p>
                       </div>
-                    </div>
+                    </button>
                   ))}
                 </div>
               ) : (
                 <p className="mt-3 text-xs leading-5 text-slate-500">You haven’t joined any communities yet.</p>
               )}
-              <button onClick={() => go("/community")} className="mt-4 text-[10px] font-extrabold uppercase tracking-wide text-blue-600 hover:text-blue-700">
-                Explore communities
+              <button onClick={() => isOwnProfile ? setProfileSection("communities") : go("/community")} className="mt-4 text-[10px] font-extrabold uppercase tracking-wide text-blue-600 hover:text-blue-700">
+                {communities.length > visibleCommunities.length ? `View all ${communities.length} communities` : "Explore communities"}
               </button>
             </div>
             )}
           </aside>
 
           <section className="profile-posts space-y-5">
+            {isOwnProfile && activeSection === "activity" && (
+              <section className="profile-composer" aria-label="Create a community post">
+                <button type="button" className="profile-composer-prompt" onClick={() => go("/create-post")}>
+                  <span className="profile-composer-avatar">
+                    {profile.avatar_url ? <img src={profile.avatar_url} alt="" /> : initials(profile.full_name)}
+                  </span>
+                  <span>Share something with Gwalior…</span>
+                  <Icon name="plus" size={18} />
+                </button>
+                <div className="profile-composer-actions">
+                  <button type="button" onClick={() => go("/create-post")}><Icon name="image" size={16} />Create a post</button>
+                  <button type="button" onClick={() => go("/post-job")}><Icon name="briefcase" size={16} />Post a job</button>
+                  <button type="button" onClick={() => go("/buy-sell")}><Icon name="shop" size={16} />List an item</button>
+                </div>
+              </section>
+            )}
             <div className="profile-posts-panel rounded-3xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
               <div className="profile-posts-heading flex items-center gap-2 pb-3 text-sm">
                 <span className="inline-flex items-center gap-2 rounded-full bg-blue-50 px-3 py-1.5 font-extrabold text-blue-700">
@@ -627,14 +1313,14 @@ export default function ProfilePage({ onLogout, profileSlug }: { onLogout?: () =
                   <article key={post.id} className="profile-post-card overflow-hidden rounded-3xl border border-slate-200 bg-slate-50">
                     <div className="flex items-center justify-between gap-3 p-4">
                       <div className="flex items-center gap-3">
-                        <button type="button" onClick={() => go(`/profile/${encodeURIComponent(profile.username)}`)} className="relative grid h-10 w-10 place-items-center overflow-hidden rounded-full bg-gradient-to-br from-sky-200 to-blue-600 text-xs font-black text-white">
+                        <button type="button" onClick={() => go(`/profile/${encodeURIComponent(normalizeProfileUsername(profile.username))}`)} className="relative grid h-10 w-10 place-items-center overflow-hidden rounded-full bg-gradient-to-br from-sky-200 to-blue-600 text-xs font-black text-white">
                           {profile.avatar_url ? (
                             <img src={profile.avatar_url} alt="" className="absolute inset-0 h-full w-full object-cover" />
                           ) : initials(profile.full_name)}
                         </button>
                         <div>
-                          <button type="button" onClick={() => go(`/profile/${encodeURIComponent(profile.username)}`)} className="block text-left text-sm font-extrabold hover:text-blue-700">{profile.full_name}</button>
-                          <button type="button" onClick={() => go(`/profile/${encodeURIComponent(profile.username)}`)} className="text-left text-[11px] text-slate-500 hover:text-blue-700">@{profile.username}.gwl · {new Date(post.created_at).toLocaleDateString()}</button>
+                          <button type="button" onClick={() => go(`/profile/${encodeURIComponent(normalizeProfileUsername(profile.username))}`)} className="block text-left text-sm font-extrabold hover:text-blue-700">{profile.full_name}</button>
+                          <button type="button" onClick={() => go(`/profile/${encodeURIComponent(normalizeProfileUsername(profile.username))}`)} className="text-left text-[11px] text-slate-500 hover:text-blue-700">@{normalizeProfileUsername(profile.username)}.gwl · {new Date(post.created_at).toLocaleDateString()}</button>
                         </div>
                       </div>
                       <span className="text-xs font-bold text-slate-500">{post.category}</span>
@@ -670,6 +1356,99 @@ export default function ProfilePage({ onLogout, profileSlug }: { onLogout?: () =
               </div>
             </div>
           </section>
+
+          {activeSection === "activity" && (
+          <aside className="profile-discovery-sidebar">
+            <section className="profile-community-stats profile-hub-panel">
+              <header className="profile-hub-panel-heading">
+                <div><h3>{isOwnProfile ? "Your local presence" : "Community stats"}</h3><p>Your activity on GwaliorWale</p></div>
+              </header>
+              <div className="profile-community-stat-grid">
+                <div><span className="profile-hub-action-blue"><Icon name="image" size={15} /></span><strong>{stats.posts}</strong><small>Posts</small></div>
+                <button type="button" onClick={() => { setFollowListProfile({ id: profile.id, name: profile.full_name }); setFollowListType("followers") }}>
+                  <span className="profile-hub-action-violet"><Icon name="users" size={15} /></span><strong>{stats.followers}</strong><small>Followers</small>
+                </button>
+                <button type="button" onClick={() => { setFollowListProfile({ id: profile.id, name: profile.full_name }); setFollowListType("following") }}>
+                  <span className="profile-hub-action-amber"><Icon name="users" size={15} /></span><strong>{stats.following}</strong><small>Following</small>
+                </button>
+                <div><span className="profile-hub-action-green"><Icon name="heart" size={15} /></span><strong>{posts.reduce((total, post) => total + post.likes_count, 0)}</strong><small>Post likes</small></div>
+              </div>
+              {isOwnProfile && (
+                <div className="profile-local-counts">
+                  <span>{myJobs.filter((job) => job.status === "active").length} active jobs</span>
+                  <span>{myMarketplaceListings.filter((listing) => listing.status === "active").length} live items</span>
+                  <span>{communities.length} communities</span>
+                </div>
+              )}
+            </section>
+
+            {isOwnProfile && (
+              <section className="profile-hub-panel profile-contribute-panel">
+                <header className="profile-hub-panel-heading"><div><h3>Local business owner?</h3><p>Help neighbors discover what you do.</p></div></header>
+                <button type="button" className="profile-business-rail-link" onClick={() => go("/list-business")}>
+                  <span className="profile-hub-action-green"><Icon name="building" size={16} /></span>
+                  <span>Add your business</span>
+                  <Icon name="chevron" size={14} />
+                </button>
+              </section>
+            )}
+
+            {isOwnProfile && (
+              <section className="profile-hub-panel profile-discovery-card">
+                <header className="profile-hub-panel-heading">
+                  <div><h3>Communities to explore</h3><p>Find a circle around your interests</p></div>
+                  <button type="button" onClick={() => setProfileSection("communities")} aria-label="View all community suggestions"><Icon name="chevron" size={16} /></button>
+                </header>
+                {recommendedGroups.length ? (
+                  <div className="profile-hub-list">{recommendedGroups.slice(0, 3).map((group) => (
+                    <div key={group.id} className="profile-hub-community">
+                      <span className="profile-hub-community-mark"><Icon name="users" size={16} /></span>
+                      <span className="profile-hub-listing-copy"><strong>{group.name}</strong><small>{group.member_count} members</small></span>
+                      <button type="button" onClick={() => void joinRecommendedGroup(group)} disabled={joiningGroupId === group.id} className={`profile-hub-join ${group.joined_by_me ? "is-joined" : ""}`}>
+                        {joiningGroupId === group.id ? "…" : group.joined_by_me ? "Joined" : "Join"}
+                      </button>
+                    </div>
+                  ))}</div>
+                ) : (
+                  <div className="profile-hub-empty profile-hub-compact-empty"><span className="profile-hub-empty-icon"><Icon name="users" size={17} /></span><div><p>Explore local circles and find people who share your interests.</p><button type="button" onClick={() => go("/community")}>Browse communities <Icon name="chevron" size={13} /></button></div></div>
+                )}
+              </section>
+            )}
+
+            {isOwnProfile && (
+              <section className="profile-hub-panel profile-discovery-card">
+                <header className="profile-hub-panel-heading">
+                  <div><h3>People to know</h3><p>Local voices from your community</p></div>
+                  <button type="button" onClick={() => go("/community")} aria-label="Explore the community"><Icon name="chevron" size={16} /></button>
+                </header>
+                {hubLoading ? <p className="profile-hub-empty" role="status">Finding local people…</p> : suggestedPeople.length ? (
+                  <div className="profile-hub-list">{suggestedPeople.slice(0, 3).map((person) => (
+                    <div key={person.user_id} className="profile-hub-person">
+                      <button type="button" onClick={() => go(`/profile/${encodeURIComponent(normalizeProfileUsername(person.username))}`)} className="profile-hub-person-profile">
+                        <span className="profile-hub-person-avatar">{person.avatar_url ? <img src={person.avatar_url} alt="" /> : initials(person.full_name)}</span>
+                        <span className="profile-hub-listing-copy"><strong>{person.full_name}</strong><small>{person.location}</small></span>
+                      </button>
+                      <button type="button" onClick={() => void followSuggestedPerson(person)} disabled={followingSuggestionId === person.user_id} className="profile-hub-join">
+                        {followingSuggestionId === person.user_id ? "…" : "Follow"}
+                      </button>
+                    </div>
+                  ))}</div>
+                ) : (
+                  <div className="profile-hub-empty profile-hub-compact-empty"><span className="profile-hub-empty-icon"><Icon name="user" size={17} /></span><div><p>People active in your local circles will appear here.</p><button type="button" onClick={() => go("/community")}>Discover the community <Icon name="chevron" size={13} /></button></div></div>
+                )}
+              </section>
+            )}
+
+            <section className="profile-hub-panel profile-topic-panel">
+              <header className="profile-hub-panel-heading"><div><h3>{isOwnProfile ? "Your local topics" : "Topics in their posts"}</h3><p>Interests from recent posts</p></div></header>
+              {profileTopics.length ? (
+                <div className="profile-topic-list">{profileTopics.map((topic) => <span key={topic}>#{topic}</span>)}</div>
+              ) : (
+                <div className="profile-hub-empty profile-hub-compact-empty"><span className="profile-hub-empty-icon"><Icon name="image" size={16} /></span><div><p>Topics will show here as posts are shared.</p>{isOwnProfile && <button type="button" onClick={() => go("/create-post")}>Share an update <Icon name="chevron" size={13} /></button>}</div></div>
+              )}
+            </section>
+          </aside>
+          )}
         </div>
       </main>
       {followListProfile && (
@@ -742,7 +1521,7 @@ export default function ProfilePage({ onLogout, profileSlug }: { onLogout?: () =
                         </span>
                         <span className="min-w-0 flex-1">
                           <span className="block truncate text-xs font-extrabold text-slate-800">{member.full_name || "Community member"}</span>
-                          <span className="mt-0.5 block truncate text-[10px] text-slate-500">@{member.username.replace(/\.gwl$/i, "")}.gwl</span>
+                          <span className="mt-0.5 block truncate text-[10px] text-slate-500">@{normalizeProfileUsername(member.username)}.gwl</span>
                         </span>
                         </button>
                         <button type="button" onClick={() => {
@@ -809,7 +1588,7 @@ export function ProfileEditorPage() {
 
         const cached = getCachedOwnProfile(user.id)
         if (cached && active) {
-          setProfile({ ...cached, username: cached.username.replace(/\.gwl$/i, "") })
+          setProfile({ ...cached, username: normalizeProfileUsername(cached.username) })
           setInterests(cached.interests ?? [])
           setLoading(false)
           return
@@ -817,7 +1596,7 @@ export function ProfileEditorPage() {
 
         const row = await getOwnProfile(user.id)
         if (!active) return
-        setProfile({ ...row, username: row.username.replace(/\.gwl$/i, "") })
+        setProfile({ ...row, username: normalizeProfileUsername(row.username) })
         setInterests(row.interests ?? [])
       } catch (err) {
         if (active) setError(err instanceof Error ? err.message : "Could not load your profile.")

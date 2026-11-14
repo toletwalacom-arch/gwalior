@@ -868,9 +868,13 @@ async function throwJobPaymentFunctionError(error: unknown): Promise<never> {
   throw new Error("The job payment service is temporarily unavailable.")
 }
 
-export async function createJobPaymentOrder(payload: JobListingPayload, days: number) {
+export async function createJobPaymentOrder(
+  payload: JobListingPayload | null,
+  days: number,
+  renewalJobId?: string,
+) {
   const { data, error } = await supabase.functions.invoke("create-job-payment-order", {
-    body: { job: payload, days },
+    body: renewalJobId ? { renewal_job_id: renewalJobId, days } : { job: payload, days },
   })
   if (error) await throwJobPaymentFunctionError(error)
   if (!data || typeof data.order_id !== "string" || typeof data.key_id !== "string" || typeof data.amount !== "number") {

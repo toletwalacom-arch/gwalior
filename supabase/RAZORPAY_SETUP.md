@@ -1,10 +1,10 @@
 # Razorpay setup for job listings
 
-Job posts are charged at **₹10 per day**, paid up front. Posters choose a duration from 1 to 365 days. The listing becomes public only after the server verifies a captured Razorpay payment, and it expires automatically after the selected duration. There is no automatic renewal.
+Job posts and renewals are charged at **₹10 per day**, paid up front. Posters choose a duration from 1 to 365 days. A new or renewed listing becomes public only after the server verifies a captured Razorpay payment, and it expires automatically after the paid duration. Renewal is manual; owners can renew an expired listing from **Jobs → My listings**.
 
 ## 1. Apply the database changes
 
-In the Supabase Dashboard, open **SQL Editor**, paste the current contents of [`schema.sql`](./schema.sql), and run it. The script is designed to be re-runnable. This adds payment-order storage and the server-only function that publishes a paid listing. Existing listings remain visible as before; new listings get an expiry.
+In the Supabase Dashboard, open **SQL Editor**, paste the current contents of [`schema.sql`](./schema.sql), and run it. The script is designed to be re-runnable. This adds payment-order storage and the server-only function that publishes or renews a paid listing. Existing listings remain visible as before; new listings get an expiry. For an already deployed project with job payments configured, apply [`migrations/20261111182000_job_listing_renewals.sql`](./migrations/20261111182000_job_listing_renewals.sql) instead.
 
 ## 2. Get Razorpay API keys
 
@@ -33,7 +33,7 @@ Supabase supplies `SUPABASE_URL`, `SUPABASE_ANON_KEY`, and `SUPABASE_SERVICE_ROL
 
 ## 5. Deploy the payment functions
 
-Deploy both functions from the repository root:
+Deploy both functions from the repository root. The payment-order function supports renewals; the verification function stays the same:
 
 ```powershell
 npx supabase functions deploy create-job-payment-order --project-ref nmqkiezgfaumyryabiau
@@ -47,7 +47,7 @@ Keep the normal JWT verification enabled. Both endpoints also verify the signed-
 1. Keep the test API keys configured and publish a short-duration test job.
 2. In Test Mode, do not scan the checkout QR with a real UPI app or enter a real UPI ID. The test QR is not a real collectible payment address and a UPI app may report that its ID is invalid. Use Razorpay's simulated UPI flow instead: where Checkout offers UPI ID entry, enter `success@razorpay` to simulate success or `failure@razorpay` to simulate failure. If Checkout only offers a QR, use another available test payment method or verify the QR test workflow in your Razorpay Dashboard; do not send real money.
 3. Ensure automatic payment capture is enabled in the Razorpay account, then complete checkout with Razorpay's test-mode payment details. Confirm that a successful captured payment creates the job, while cancelling/failing checkout does not.
-4. Check that the job is visible in the listings, its `expires_at` is set in `job_listings`, and it is no longer publicly browsable after that timestamp.
+4. Check that the job is visible in the listings, its `expires_at` is set in `job_listings`, and it is no longer publicly browsable after that timestamp. After expiry, renew it from **My listings** and confirm the same listing becomes publicly visible again after successful payment.
 5. Before launch, replace the secrets with the **Live Mode** Key ID and Key Secret, and complete any Razorpay account activation/KYC steps. Deploy the functions again only if you change function code; secrets take effect without changing the app bundle.
 
 The amount is calculated and enforced on the server as `days × 1000` paise. Do not change the browser-side displayed price without making the corresponding server and database policy changes.

@@ -1,4 +1,5 @@
 import { FormEvent, useEffect, useMemo, useState } from "react"
+import { createPortal } from "react-dom"
 import {
   applyForJob,
   createJobPaymentOrder,
@@ -104,6 +105,22 @@ function formatDate(value: string) {
   })
 }
 
+function getListingState(job: JobListing) {
+  const expiresAt = job.expires_at ? Date.parse(job.expires_at) : Number.NaN
+  const expired = Number.isFinite(expiresAt) && expiresAt <= Date.now()
+  if (expired) return { state: "expired" as const, label: "Expired", detail: `Expired ${formatDate(job.expires_at!)}` }
+  if (job.status === "closed") return {
+    state: "closed" as const,
+    label: "Closed",
+    detail: job.expires_at ? `Closed · expires ${formatDate(job.expires_at)}` : "Closed by you",
+  }
+  return {
+    state: "active" as const,
+    label: "Active",
+    detail: job.expires_at ? `Expires ${formatDate(job.expires_at)}` : "Accepting applications",
+  }
+}
+
 function getErrorMessage(error: unknown, fallback: string) {
   if (error instanceof Error) return error.message
   if (error && typeof error === "object" && "message" in error && typeof error.message === "string") {
@@ -172,7 +189,7 @@ function BriefcaseIcon({ className = "" }: { className?: string }) {
 }
 
 function JobCard({ job, owner = false }: { job: JobListing; owner?: boolean }) {
-  const expired = Boolean(job.expires_at && Date.parse(job.expires_at) <= Date.now())
+  const listingState = getListingState(job)
   return (
     <button
       type="button"
@@ -183,6 +200,10 @@ function JobCard({ job, owner = false }: { job: JobListing; owner?: boolean }) {
       <span className="job-listing-copy">
         <span className="job-listing-title">{job.title}</span>
         <span className="job-listing-company">{job.company} <i /> {job.location}</span>
+        {owner && <span className="job-owner-status">
+          <span className={`job-status ${listingState.state}`}>{listingState.label}</span>
+          <span>{listingState.detail}</span>
+        </span>}
         <span className="job-listing-tags">
           <span>{job.employment_type}</span>
           <span>{job.workplace_type}</span>
@@ -191,7 +212,6 @@ function JobCard({ job, owner = false }: { job: JobListing; owner?: boolean }) {
       </span>
       <span className="job-listing-end">
         {isSampleJob(job) && <span className="job-status sample">Sample</span>}
-        {owner && <span className={`job-status ${expired ? "expired" : job.status}`}>{expired ? "Expired" : job.status === "active" ? "Accepting applications" : "Closed"}</span>}
         <span className="job-listing-date">{formatDate(job.created_at)}</span>
         <span className="job-listing-arrow" aria-hidden="true">→</span>
       </span>
@@ -223,7 +243,6 @@ export function JobsPage({ loggedIn }: JobsPageProps) {
   const [myListings, setMyListings] = useState<JobListing[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState("")
-  const [showingSamples, setShowingSamples] = useState(false)
   const [activeTab, setActiveTab] = useState<"browse" | "manage">("browse")
   const [search, setSearch] = useState("")
   const [typeFilter, setTypeFilter] = useState("All job types")
@@ -234,22 +253,19 @@ export function JobsPage({ loggedIn }: JobsPageProps) {
     async function load() {
       setLoading(true)
       setError("")
-      setShowingSamples(false)
       try {
         const [publicJobs, ownJobs] = await Promise.all([
           getJobListings(),
           loggedIn ? getMyJobListings() : Promise.resolve([]),
         ])
         if (active) {
-          setListings(publicJobs.length ? publicJobs : sampleJobs)
-          setShowingSamples(publicJobs.length === 0)
+          setListings(publicJobs)
           setMyListings(ownJobs)
         }
       } catch (loadError) {
         console.error("Could not load job listings:", loadError)
         if (active) {
-          setListings(sampleJobs)
-          setShowingSamples(true)
+          setListings([])
           setError(getErrorMessage(loadError, "Could not load job listings."))
         }
       } finally {
@@ -301,16 +317,22 @@ export function JobsPage({ loggedIn }: JobsPageProps) {
             <h2>Opportunities in Gwalior</h2>
             <p className="jobs-section-subtitle">A growing list of roles shared by local employers.</p>
           </div>
-          <button type="button" onClick={startPosting} className="job-button job-button-primary">
-            <span aria-hidden="true">+</span> Post a job
-          </button>
+          <div className="jobs-heading-actions">
+            {loggedIn && <button type="button" onClick={() => {
+              setActiveTab("manage")
+              document.getElementById("job-list-results")?.scrollIntoView({ behavior: "smooth", block: "start" })
+            }} className="job-button job-button-outline">My job listings{myListings.length > 0 && <span className="jobs-heading-count">{myListings.length}</span>}</button>}
+            <button type="button" onClick={startPosting} className="job-button job-button-primary">
+              <span aria-hidden="true">+</span> Post a job
+            </button>
+          </div>
         </div>
 
         <div className="jobs-toolbar">
           {loggedIn && (
             <div className="jobs-tabs" role="tablist" aria-label="Job listings">
               <button type="button" role="tab" aria-selected={activeTab === "browse"} onClick={() => setActiveTab("browse")}>Browse jobs</button>
-              <button type="button" role="tab" aria-selected={activeTab === "manage"} onClick={() => setActiveTab("manage")}>My listings{myListings.length > 0 && <span>{myListings.length}</span>}</button>
+              <button type="button" role="tab" aria-selected={activeTab === "manage"} onClick={() => setActiveTab("manage")}>My job listings{myListings.length > 0 && <span>{myListings.length}</span>}</button>
             </div>
           )}
           <div className="jobs-filters">
@@ -325,11 +347,21 @@ export function JobsPage({ loggedIn }: JobsPageProps) {
           </div>
         </div>
 
-        {showingSamples && activeTab === "browse" && <p className="job-sample-notice">These are sample opportunities for preview. They are not live listings and can’t accept applications.</p>}
         {error && <div className="job-load-error">
-          <ErrorNote>{`${error}. Showing sample jobs for now; apply the latest supabase/schema.sql in the Supabase SQL Editor to enable live listings.`}</ErrorNote>
+          <ErrorNote>{`${error}. Check that your active job listings are in the connected Supabase project and that its public-read policy is applied.`}</ErrorNote>
           <button type="button" className="job-back-link" onClick={() => setReloadKey((key) => key + 1)}>Try again</button>
         </div>}
+        <div id="job-list-results" className="job-list-results">
+        {!loading && activeTab === "manage" && !error && myListings.length > 0 && (
+          <div className="job-owner-list-heading">
+            <div><h3>Your job listings</h3><p>Check each listing’s status and renewal date here.</p></div>
+            <div className="job-owner-status-legend">
+              <span><i className="active" />Active</span>
+              <span><i className="expired" />Expired</span>
+              <span><i className="closed" />Closed</span>
+            </div>
+          </div>
+        )}
         {loading ? <LoadingNote /> : activeTab === "manage" ? (
           myListings.length ? (
             <div className="jobs-results">
@@ -349,8 +381,14 @@ export function JobsPage({ loggedIn }: JobsPageProps) {
             <button type="button" className="job-button job-button-primary" onClick={() => { setSearch(""); setTypeFilter("All job types") }}>Clear filters</button>
           </div>
         ) : (
-          <EmptyJobs onPost={startPosting} />
+          <div className="job-empty-state">
+            <span className="job-empty-icon"><BriefcaseIcon /></span>
+            <h2>No public active job listings found</h2>
+            <p>Jobs can be browsed without signing in. If active listings already exist, check that they are in the connected Supabase project and its public-read policy is applied.</p>
+            <button type="button" className="job-button job-button-primary" onClick={startPosting}>Post a job</button>
+          </div>
         )}
+        </div>
       </section>
       <div className="jobs-mobile-post">
         <button type="button" onClick={startPosting} className="job-button job-button-primary job-button-full">
@@ -362,7 +400,8 @@ export function JobsPage({ loggedIn }: JobsPageProps) {
 }
 
 function ManagedJob({ job, onUpdate }: { job: JobListing; onUpdate: (job: JobListing) => void }) {
-  const expired = Boolean(job.expires_at && Date.parse(job.expires_at) <= Date.now())
+  const listingState = getListingState(job)
+  const expired = listingState.state === "expired"
   const [open, setOpen] = useState(false)
   const [applications, setApplications] = useState<JobApplication[]>([])
   const [loading, setLoading] = useState(false)
@@ -404,9 +443,10 @@ function ManagedJob({ job, onUpdate }: { job: JobListing; onUpdate: (job: JobLis
       <JobCard job={job} owner />
       <div className="job-management-actions">
         <button type="button" onClick={() => void toggleApplications()}>{open ? "Hide applicants" : "View applicants"}</button>
-        <button type="button" disabled={saving || expired} onClick={() => void toggleStatus()}>{saving ? "Saving…" : expired ? "Expired" : job.status === "active" ? "Close listing" : "Reopen listing"}</button>
+        {!expired && <button type="button" disabled={saving} onClick={() => void toggleStatus()}>{saving ? "Saving…" : job.status === "active" ? "Close listing" : "Reopen listing"}</button>}
       </div>
       {error && <ErrorNote>{error}</ErrorNote>}
+      {expired && <RenewJobListing job={job} onRenewed={onUpdate} />}
       {open && (loading ? <LoadingNote /> : applications.length ? (
         <div className="job-applications">
           <h3>{applications.length} {applications.length === 1 ? "application" : "applications"}</h3>
@@ -419,6 +459,166 @@ function ManagedJob({ job, onUpdate }: { job: JobListing; onUpdate: (job: JobLis
           ))}
         </div>
       ) : <p className="job-applications-empty">No applications received yet.</p>)}
+    </div>
+  )
+}
+
+function RenewJobListing({ job, onRenewed }: { job: JobListing; onRenewed: (job: JobListing) => void }) {
+  const [expanded, setExpanded] = useState(false)
+  const [modalClosing, setModalClosing] = useState(false)
+  const [days, setDays] = useState(30)
+  const [submitting, setSubmitting] = useState(false)
+  const [pendingPayment, setPendingPayment] = useState<RazorpayPaymentResponse | null>(null)
+  const [error, setError] = useState("")
+
+  useEffect(() => {
+    if (!expanded) return
+    const previousOverflow = document.body.style.overflow
+    document.body.style.overflow = "hidden"
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setModalClosing(true)
+    }
+    window.addEventListener("keydown", closeOnEscape)
+    return () => {
+      document.body.style.overflow = previousOverflow
+      window.removeEventListener("keydown", closeOnEscape)
+    }
+  }, [expanded])
+
+  async function confirmPayment(payment: RazorpayPaymentResponse) {
+    setSubmitting(true)
+    setError("")
+    try {
+      const renewedJobId = await verifyJobPayment({
+        order_id: payment.razorpay_order_id,
+        payment_id: payment.razorpay_payment_id,
+        signature: payment.razorpay_signature,
+      })
+      if (renewedJobId !== job.id) throw new Error("The payment was confirmed, but the wrong job listing was returned. Retry verification.")
+      setPendingPayment(null)
+      onRenewed({
+        ...job,
+        status: "active",
+        expires_at: new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString(),
+      })
+    } catch (verificationError) {
+      console.error("Could not verify job renewal payment:", verificationError)
+      setPendingPayment(payment)
+      setError("Payment may have gone through, but we couldn't confirm it yet. Retry verification below; don't pay again.")
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  async function startRenewal() {
+    if (!Number.isInteger(days) || days < 1 || days > 365) {
+      setError("Choose a renewal duration from 1 to 365 days.")
+      return
+    }
+    if (pendingPayment) {
+      setError("Verify the previous payment before starting another renewal.")
+      return
+    }
+    setSubmitting(true)
+    setError("")
+    try {
+      const order = await createJobPaymentOrder(null, days, job.id)
+      await loadRazorpayCheckout()
+      if (!window.Razorpay) throw new Error("Razorpay checkout did not initialize. Please try again.")
+      const currentUser = await getCurrentUser()
+      const checkout = new window.Razorpay({
+        key: order.keyId,
+        amount: order.amount,
+        currency: order.currency,
+        name: "Gwalior Connect",
+        description: `Renew ${job.title} for ${days} day${days === 1 ? "" : "s"}`,
+        order_id: order.orderId,
+        prefill: currentUser?.email ? { email: currentUser.email } : {},
+        theme: { color: "#2863bd" },
+        handler: (payment) => void confirmPayment(payment),
+        modal: { ondismiss: () => setSubmitting(false) },
+      })
+      checkout.on("payment.failed", (response) => {
+        setError(response.error?.description || "Payment failed. Your listing remains expired.")
+        setSubmitting(false)
+      })
+      checkout.open()
+    } catch (paymentError) {
+      console.error("Could not start job renewal payment:", paymentError)
+      setError(getErrorMessage(paymentError, "Could not start this renewal payment."))
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <div className="job-renewal">
+      <div className="job-renewal-summary">
+        <div className="job-renewal-summary-copy">
+          <span className="job-renewal-summary-icon"><BriefcaseIcon /></span>
+          <div>
+            <span className="job-renewal-expired-label">Listing expired</span>
+            <p>{job.expires_at ? `Expired ${formatDate(job.expires_at)}.` : "This listing has expired."} Renew it to make it visible to candidates again.</p>
+          </div>
+        </div>
+        <button type="button" className="job-button job-button-primary" onClick={() => {
+          setModalClosing(false)
+          setExpanded(true)
+        }}>Renew listing</button>
+      </div>
+      {expanded && createPortal(
+        <div
+          className={`post-detail-comments-backdrop job-renewal-modal-backdrop${modalClosing ? " is-closing" : ""}`}
+          onClick={() => setModalClosing(true)}
+          onAnimationEnd={(event) => {
+            if (event.target === event.currentTarget && modalClosing) {
+              setExpanded(false)
+              setModalClosing(false)
+            }
+          }}
+        >
+          <section
+            className={`post-detail-comments job-renewal-dialog${modalClosing ? " is-closing" : ""}`}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby={`renew-job-title-${job.id}`}
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="job-renewal-form job-renewal-modal-form">
+              <div className="job-renewal-heading">
+                <div className="job-renewal-heading-copy">
+                  <span className="job-renewal-heading-icon"><BriefcaseIcon /></span>
+                  <span><strong id={`renew-job-title-${job.id}`}>Renew this job</strong><span>Republish this listing for a new paid term.</span></span>
+                </div>
+                <button type="button" aria-label="Close renewal options" onClick={() => setModalClosing(true)}>×</button>
+              </div>
+              <div className="job-renewal-options">
+                <label htmlFor={`renewal-days-${job.id}`}>Renewal duration
+                  <select id={`renewal-days-${job.id}`} value={days} disabled={submitting || Boolean(pendingPayment)} onChange={(event) => {
+                    const selectedDays = Number(event.currentTarget.value)
+                    setDays(selectedDays)
+                    setError("")
+                  }}>
+                    {[7, 14, 30, 60, 90, 180, 365].map((duration) => <option key={duration} value={duration}>{duration} days</option>)}
+                  </select>
+                </label>
+                <div className="job-renewal-price-card">
+                  <span>Total renewal fee</span>
+                  <strong>₹{Number.isInteger(days) && days > 0 && days <= 365 ? days * 10 : 0}</strong>
+                  <small>₹10 per day · Includes {days} days</small>
+                </div>
+              </div>
+              <p className="job-renewal-visibility-note"><span aria-hidden="true">✓</span> Your job becomes visible again after payment is confirmed.</p>
+              {error && <p role="alert" className="job-renewal-error">{error}</p>}
+              {pendingPayment && <button type="button" disabled={submitting} className="job-payment-retry" onClick={() => void confirmPayment(pendingPayment)}>Retry payment verification</button>}
+              <button type="button" disabled={submitting || Boolean(pendingPayment)} className="job-button job-button-primary" onClick={() => void startRenewal()}>
+                {submitting ? "Waiting for payment…" : `Continue to payment · ₹${Number.isInteger(days) && days > 0 && days <= 365 ? days * 10 : 0}`}
+              </button>
+              <p className="job-renewal-secure-note">Secure payment powered by Razorpay</p>
+            </div>
+          </section>
+        </div>,
+        document.body,
+      )}
     </div>
   )
 }

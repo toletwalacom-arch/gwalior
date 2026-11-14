@@ -1771,8 +1771,9 @@ function SectionTitle({
   )
 }
 
-function HomePage({ profile }: { profile: UserIdentity | null }) {
+function HomePage({ profile, loggedIn }: { profile: UserIdentity | null; loggedIn: boolean }) {
   const [search, setSearch] = useState("")
+  const [createPostOpen, setCreatePostOpen] = useState(false)
   const [homePosts, setHomePosts] = useState<Post[]>(defaultPosts.slice(2))
   const [homePostsLoading, setHomePostsLoading] = useState(true)
   const [homePostsError, setHomePostsError] = useState("")
@@ -1887,18 +1888,20 @@ function HomePage({ profile }: { profile: UserIdentity | null }) {
     e.preventDefault()
     go(`/explore?q=${encodeURIComponent(search)}`)
   }
+  const openCreatePost = () => setCreatePostOpen(true)
+
   return (
     <div className="home-page">
       <section className="home-hero relative min-h-[590px] overflow-hidden bg-[#142B49] text-white">
         <img
           src={IMG.fort}
           alt="Gwalior Fort overlooking the city"
-          className="absolute inset-0 h-full w-full object-cover opacity-55"
+          className="home-hero-image absolute inset-0 h-full w-full object-cover opacity-55"
         />
-        <div className="absolute inset-0 bg-gradient-to-r from-[#0b203a]/95 via-[#142B49]/78 to-[#142B49]/20"></div>
+        <div className="home-hero-overlay absolute inset-0 bg-gradient-to-r from-[#0b203a]/95 via-[#142B49]/78 to-[#142B49]/20"></div>
         <div className="hero-pattern absolute inset-0 opacity-20"></div>
-        <div className="relative mx-auto flex min-h-[590px] max-w-[1280px] items-center px-5 py-16 lg:px-6">
-          <div className="max-w-3xl">
+        <div className="home-hero-inner relative mx-auto flex min-h-[590px] max-w-[1280px] items-center px-5 py-16 lg:px-6">
+          <div className="home-hero-copy max-w-3xl">
             <div className="inline-flex items-center gap-2 rounded-full border border-white/20 bg-white/10 px-3 py-1.5 text-[10px] font-extrabold uppercase tracking-[.14em] backdrop-blur">
               <Icon name="location" size={13} className="text-orange-400" />
               Gwalior’s own digital community
@@ -1948,7 +1951,7 @@ function HomePage({ profile }: { profile: UserIdentity | null }) {
                 Explore Gwalior
               </Button>
             </div>
-            <div className="mt-8 flex flex-wrap gap-x-7 gap-y-3 text-xs text-blue-100/80">
+            <div className="home-hero-stats mt-8 flex flex-wrap gap-x-7 gap-y-3 text-xs text-blue-100/80">
               {[
                 ["12K+", "Community members"],
                 ["840+", "Local businesses"],
@@ -1962,9 +1965,14 @@ function HomePage({ profile }: { profile: UserIdentity | null }) {
                 </div>
               ))}
             </div>
+            <div className="home-hero-highlights" aria-label="What you can do on GwaliorWale">
+              <span><Icon name="verified" size={15} /> Made for Gwalior</span>
+              <span><Icon name="people" size={15} /> Meet your local community</span>
+              <span><Icon name="compass" size={15} /> Find places and opportunities</span>
+            </div>
           </div>
         </div>
-        <span className="absolute bottom-4 right-5 rounded bg-black/35 px-2 py-1 text-[9px] text-white/70 backdrop-blur">
+        <span className="home-hero-credit absolute bottom-4 right-5 rounded bg-black/35 px-2 py-1 text-[9px] text-white/70 backdrop-blur">
           Gwalior Fort · Photo by Chirag Vashist / Unsplash
         </span>
       </section>
@@ -2049,12 +2057,6 @@ function HomePage({ profile }: { profile: UserIdentity | null }) {
         </div>
       </section>
 
-      <ForYouSection
-        posts={recommendedPosts}
-        loading={recommendedPostsLoading}
-        error={recommendedPostsError}
-      />
-
       <section className="home-feed bg-[#f7f8fa] py-16">
         <div className="section py-0">
           <div className="grid gap-8 lg:grid-cols-[minmax(0,1fr)_330px]">
@@ -2066,7 +2068,7 @@ function HomePage({ profile }: { profile: UserIdentity | null }) {
                 onAction={() => go("/community")}
               />
               <button
-                onClick={() => go("/create-post")}
+                onClick={openCreatePost}
                 className="card mb-4 flex w-full items-center gap-3 p-4 text-left"
               >
                 <Avatar text={profile ? getInitials(profile.full_name) : "YOU"} imageUrl={profile?.avatar_url} />
@@ -2127,6 +2129,15 @@ function HomePage({ profile }: { profile: UserIdentity | null }) {
         </div>
       </section>
 
+      {createPostOpen && (
+        <CreatePostPage
+          loggedIn={loggedIn}
+          profile={profile}
+          modal
+          onClose={() => setCreatePostOpen(false)}
+          onPublished={() => setHomePosts((posts) => posts.slice(0, 4))}
+        />
+      )}
       <section className="home-guides section">
         <SectionTitle
           eyebrow="City guide"
@@ -2490,43 +2501,6 @@ function EventRow({ event }: { event: typeof events[0] }) {
     </button>
   )
 }
-function ForYouSection({
-  posts: suggestedPosts,
-  loading,
-  error,
-}: {
-  posts: Post[]
-  loading: boolean
-  error: string
-}) {
-  return (
-    <section className="home-recommendations bg-[#f7f8fa] py-12">
-      <div className="section py-0">
-        <SectionTitle
-          eyebrow="Your community"
-          title="For You"
-          description="Posts picked from your interests, joined communities, followers, and people you follow."
-          action="Open community"
-          onAction={() => go("/community")}
-          createPostAction
-        />
-        <div className="home-recommendation-list">
-          {error && <p role="alert" className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">{error}</p>}
-          {loading && !suggestedPosts.length ? (
-            <p role="status" className="py-8 text-center text-sm text-slate-500">Finding posts for you...</p>
-          ) : suggestedPosts.length ? (
-            suggestedPosts.map((post) => <PostCard key={post.id} post={post} feedContext={suggestedPosts} homeFeed />)
-          ) : (
-            <p className="rounded-xl border border-slate-200 bg-white p-5 text-sm text-slate-500">
-              Join a community, follow local people, or add interests to your profile to get posts picked for you.
-            </p>
-          )}
-        </div>
-      </div>
-    </section>
-  )
-}
-
 function PageHero({
   eyebrow,
   title,
@@ -2595,7 +2569,7 @@ function RecommendedGroups() {
   }
 
   return (
-    <section className="card p-4 sm:p-5">
+    <section className="community-recommended-groups card p-4 sm:p-5">
       <div className="flex items-start justify-between gap-3">
         <div>
           <div className="eyebrow">Find your people</div>
@@ -2760,10 +2734,11 @@ function CreateCommunityForm({
   )
 }
 
-function CommunityPage({ profile }: { profile: UserIdentity | null }) {
+function CommunityPage({ profile, loggedIn }: { profile: UserIdentity | null; loggedIn: boolean }) {
   const pageSize = 20
   const [filter, setFilter] = useState<"for_you" | "following" | "latest" | "trending">("for_you"),
     [query, setQuery] = useState("")
+  const [createPostOpen, setCreatePostOpen] = useState(false)
   const [creatingCommunity, setCreatingCommunity] = useState(false)
   const [communityMessage, setCommunityMessage] = useState("")
   const [feedPosts, setFeedPosts] = useState<Post[]>([])
@@ -2775,6 +2750,7 @@ function CommunityPage({ profile }: { profile: UserIdentity | null }) {
   const [resettingPreferences, setResettingPreferences] = useState(false)
   const [preferenceMessage, setPreferenceMessage] = useState("")
   const requestId = useRef(0)
+  const openCreatePost = () => setCreatePostOpen(true)
 
   useEffect(() => {
     const refreshFeed = () => setFeedRevision((revision) => revision + 1)
@@ -2851,8 +2827,8 @@ function CommunityPage({ profile }: { profile: UserIdentity | null }) {
         title="Community"
         description="Ask questions, share recommendations and connect with people across Gwalior."
       >
-        <div className="mt-6 flex max-w-xl flex-wrap gap-2">
-          <label className="search-field min-w-[180px] flex-1">
+        <div className="community-hero-actions mt-6 flex max-w-xl flex-wrap gap-2">
+          <label className="community-search search-field min-w-[180px] flex-1">
             <Icon name="search" size={17} />
             <input
               value={query}
@@ -2860,7 +2836,7 @@ function CommunityPage({ profile }: { profile: UserIdentity | null }) {
               placeholder="Search community posts..."
             />
           </label>
-          <Button onClick={() => go("/create-post")}>
+          <Button onClick={openCreatePost}>
             <Icon name="plus" size={16} />
             Create post
           </Button>
@@ -2876,7 +2852,7 @@ function CommunityPage({ profile }: { profile: UserIdentity | null }) {
           </Button>
         </div>
       </PageHero>
-      <main className="section">
+      <main className="community-main section">
         {creatingCommunity && (
           <CreateCommunityForm
             onCancel={() => setCreatingCommunity(false)}
@@ -2891,8 +2867,8 @@ function CommunityPage({ profile }: { profile: UserIdentity | null }) {
             {communityMessage}
           </p>
         )}
-        <div className="grid gap-6 lg:grid-cols-[220px_minmax(0,1fr)_300px]">
-          <aside className="hidden lg:block">
+        <div className="community-layout grid gap-6 lg:grid-cols-[220px_minmax(0,1fr)_300px]">
+          <aside className="community-topics-sidebar hidden lg:block">
             <div className="card sticky top-24 p-3">
               <div className="px-3 py-2 text-[9px] font-extrabold uppercase tracking-wider text-slate-400">
                 Browse topics
@@ -2909,17 +2885,17 @@ function CommunityPage({ profile }: { profile: UserIdentity | null }) {
               ))}
             </div>
           </aside>
-          <div>
+          <div className="community-feed-column">
             <button
-              onClick={() => go("/create-post")}
-              className="card mb-4 flex w-full items-center gap-3 p-4 text-left"
+              onClick={openCreatePost}
+              className="community-composer card mb-4 flex w-full items-center gap-3 p-4 text-left"
             >
               <Avatar text={profile ? getInitials(profile.full_name) : "YOU"} imageUrl={profile?.avatar_url} />
               <span className="flex-1 rounded-full bg-slate-50 px-4 py-3 text-xs text-slate-400">
                 {profile ? `Share something, ${profile.full_name.split(" ")[0]}...` : "What’s happening in Gwalior?"}
               </span>
             </button>
-            <div className="mb-4 grid grid-cols-4 gap-1 rounded-xl border border-slate-200 bg-white p-1">
+            <div className="community-feed-tabs mb-4 grid grid-cols-4 gap-1 rounded-xl border border-slate-200 bg-white p-1">
               {feedTabs.map(({ id, label }) => (
                 <button
                   key={id}
@@ -2958,7 +2934,7 @@ function CommunityPage({ profile }: { profile: UserIdentity | null }) {
                   title={query ? "No conversations found" : filter === "following" ? "No posts from followed people yet" : "No community posts yet"}
                   text={query ? "Try a different search or start the first discussion." : filter === "following" ? "Follow local people and creators to see their posts here." : "Be the first to share something with Gwalior."}
                   action="Create post"
-                  onAction={() => go("/create-post")}
+                  onAction={openCreatePost}
                 />
               )}
               {!feedError && !loadingPosts && hasMore && (
@@ -2973,7 +2949,7 @@ function CommunityPage({ profile }: { profile: UserIdentity | null }) {
               )}
             </div>
           </div>
-          <aside className="hidden space-y-5 lg:block">
+          <aside className="community-context-sidebar hidden space-y-5 lg:block">
             <TrendingCard />
             <div className="card p-5">
               <h3 className="text-sm font-extrabold">Coming up</h3>
@@ -3004,6 +2980,15 @@ function CommunityPage({ profile }: { profile: UserIdentity | null }) {
           />
         )}
       />
+      {createPostOpen && (
+        <CreatePostPage
+          loggedIn={loggedIn}
+          profile={profile}
+          modal
+          onClose={() => setCreatePostOpen(false)}
+          onPublished={() => setFeedRevision((revision) => revision + 1)}
+        />
+      )}
     </>
   )
 }
@@ -3785,7 +3770,7 @@ const marketplaceCategories = [
 ]
 
 function MarketplacePage({ loggedIn }: { loggedIn: boolean }) {
-  const [listings, setListings] = useState<MarketplaceListing[]>(sampleMarketplaceListings)
+  const [listings, setListings] = useState<MarketplaceListing[]>([])
   const [search, setSearch] = useState("")
   const [category, setCategory] = useState("All")
   const [favorites, setFavorites] = useState<string[]>([])
@@ -3799,18 +3784,29 @@ function MarketplacePage({ loggedIn }: { loggedIn: boolean }) {
   const [myListingsMode, setMyListingsMode] = useState(false)
   const [busy, setBusy] = useState(false)
   const [actionError, setActionError] = useState("")
+  const [listingsError, setListingsError] = useState("")
   const [viewerId, setViewerId] = useState("")
 
   const refreshListings = async () => {
+    setListingsError("")
     try {
       const rows = myListingsMode
         ? await getMyMarketplaceListings()
         : await getMarketplaceListings()
-      setListings(rows.length || myListingsMode ? rows : sampleMarketplaceListings)
-      if (loggedIn) setFavorites(await getMyMarketplaceFavoriteIds())
+      setListings(rows)
     } catch (reason) {
       console.error("Could not load marketplace listings:", reason)
-      setListings(myListingsMode ? [] : sampleMarketplaceListings)
+      setListings([])
+      setListingsError(reason instanceof Error ? reason.message : "Could not load marketplace listings.")
+      return
+    }
+    if (loggedIn) {
+      try {
+        setFavorites(await getMyMarketplaceFavoriteIds())
+      } catch (reason) {
+        console.error("Could not load saved marketplace listings:", reason)
+        setActionError(reason instanceof Error ? reason.message : "Could not load your saved listings.")
+      }
     }
   }
 
@@ -3880,7 +3876,7 @@ function MarketplacePage({ loggedIn }: { loggedIn: boolean }) {
     try {
       const listing = await publishMarketplaceListing(payload, images)
       setMyListingsMode(false)
-      setListings((current) => [listing, ...current.filter((item) => !item.id.startsWith("sample-"))])
+      setListings((current) => [listing, ...current])
       setCategory("All")
       setSearch("")
       setPostedMessage("Your ad has been published and is now visible in Gwalior.")
@@ -3991,6 +3987,12 @@ function MarketplacePage({ loggedIn }: { loggedIn: boolean }) {
       <main className="marketplace-content mx-auto max-w-[1280px] px-5 py-8 lg:px-6 lg:py-10">
         {postedMessage && <div role="status" className="mb-5 flex items-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-sm font-semibold text-emerald-800"><Icon name="check" size={17} />{postedMessage}</div>}
         {actionError && <p role="alert" className="mb-5 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">{actionError}</p>}
+        {listingsError && (
+          <div role="alert" className="mb-5 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+            <p>Could not load marketplace listings: {listingsError}. Check that the listings are in the connected Supabase project and that its public-read policy is applied.</p>
+            <button type="button" onClick={() => void refreshListings()} className="mt-2 font-bold underline">Try again</button>
+          </div>
+        )}
         <div className="marketplace-private-note mb-6 flex items-center justify-between gap-3">
           <p className="text-xs leading-5 text-slate-500">Seller identity stays private unless the lister chooses to share their profile.</p>
           <button
@@ -4064,9 +4066,9 @@ function MarketplacePage({ loggedIn }: { loggedIn: boolean }) {
           ) : (
             <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 px-5 py-14 text-center">
               <Icon name="search" size={26} className="mx-auto text-slate-400" />
-              <h3 className="mt-3 font-extrabold text-slate-800">{myListingsMode ? "You have not posted any listings yet" : "No listings found"}</h3>
-              <p className="mt-1 text-sm text-slate-500">{myListingsMode ? "Post an item to start your local marketplace activity." : "Try another search or choose a different category."}</p>
-              <button onClick={() => { setSearch(""); setCategory("All") }} className="mt-4 text-sm font-bold text-blue-700">Clear search</button>
+              <h3 className="mt-3 font-extrabold text-slate-800">{myListingsMode ? "You have not posted any listings yet" : listings.length ? "No listings found" : "No public active listings found"}</h3>
+              <p className="mt-1 text-sm text-slate-500">{myListingsMode ? "Post an item to start your local marketplace activity." : listings.length ? "Try another search or choose a different category." : "Items can be browsed without signing in. If active listings already exist, check that they are in the connected Supabase project and its public-read policy is applied."}</p>
+              {(search || category !== "All") && <button onClick={() => { setSearch(""); setCategory("All") }} className="mt-4 text-sm font-bold text-blue-700">Clear search</button>}
             </div>
           )}
         </section>
@@ -4596,104 +4598,155 @@ function AuthPage({
 
   return (
     <main className="auth-shell">
-      <div className="auth-card">
-        <div className="flex justify-center">
-          <Logo />
-        </div>
-        <h1 className="mt-7 text-center text-2xl font-extrabold">
-          {register ? "Join your city community" : "Welcome back"}
-        </h1>
-        <p className="mt-2 text-center text-xs text-slate-500">
-          {register
-            ? "Create your GwaliorWale profile in a minute."
-            : "Log in to continue the conversation."}
-        </p>
-        <form onSubmit={handleSubmit} className="mt-7 space-y-4">
-          {register && (
-            <Field label="Full name">
-              <input
-                required
-                className="input"
-                placeholder="Your full name"
-                value={fullName}
-                onChange={(e) => setFullName(e.target.value)}
-              />
-            </Field>
-          )}
-          {register && (
-            <Field label="Username">
-              <div className="flex items-center overflow-hidden rounded-xl border border-[#d9dee7] focus-within:border-blue-400 focus-within:ring-4 focus-within:ring-blue-500/10">
+      <div className="auth-layout">
+        <section className="auth-visual">
+          <div className="auth-visual-inner">
+            <div className="auth-badge">
+              <Icon name="location" size={14} className="text-orange-400" />
+              Your city, connected
+            </div>
+            <Logo inverse />
+            <h1>
+              {register ? "Build your place in Gwalior" : "Welcome back to your local network"}
+            </h1>
+            <p>
+              {register
+                ? "Create your profile, discover trusted people, and stay plugged into the things that matter in your city."
+                : "Log in to join conversations, support local businesses, and keep up with what’s happening around you."}
+            </p>
+            <div className="auth-feature-list">
+              {[
+                "Local updates, people and opportunities in one place",
+                "Trusted community conversations from your city",
+                "Fast access to businesses, events and neighbourhood groups",
+              ].map((item) => (
+                <div key={item} className="auth-feature-item">
+                  <span className="auth-feature-check">
+                    <Icon name="check" size={14} />
+                  </span>
+                  <span>{item}</span>
+                </div>
+              ))}
+            </div>
+            <div className="auth-metrics">
+              <div>
+                <strong>12K+</strong>
+                <span>members</span>
+              </div>
+              <div>
+                <strong>840+</strong>
+                <span>businesses</span>
+              </div>
+              <div>
+                <strong>2.4K</strong>
+                <span>conversations</span>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section className="auth-card">
+          <div className="flex justify-center">
+            <Logo compact />
+          </div>
+          <div className="auth-form-header">
+            <h2>{register ? "Create your account" : "Log in to continue"}</h2>
+            <p>
+              {register
+                ? "Start discovering and contributing to Gwalior in minutes."
+                : "Access your community profile and local updates."}
+            </p>
+          </div>
+
+          <form onSubmit={handleSubmit} className="mt-7 space-y-4">
+            {register && (
+              <Field label="Full name">
                 <input
                   required
-                  minLength={3}
-                  maxLength={24}
-                  pattern="[a-zA-Z0-9_-]{3,24}"
-                  className="min-w-0 flex-1 border-0 bg-transparent px-3 py-3 text-xs outline-none"
-                  placeholder="yourname"
-                  value={username}
-                  onChange={(e) => setUsername(e.target.value.toLowerCase().replace(/[^a-z0-9_-]/g, ""))}
+                  className="input"
+                  placeholder="Your full name"
+                  value={fullName}
+                  onChange={(e) => setFullName(e.target.value)}
                 />
-                <span className="bg-slate-50 px-3 py-3 text-xs font-bold text-slate-500">.gwl</span>
-              </div>
-              <span className="mt-1 block text-[10px] text-slate-500">
-                3–24 letters, numbers, underscores, or hyphens.
-              </span>
-            </Field>
-          )}
-          <Field label={register ? "Email address" : "Username"}>
-            <input
-              required
-              type={register ? "email" : "text"}
-              className="input"
-              placeholder={register ? "you@example.com" : "yourname.gwl"}
-              value={identifier}
-              onChange={(e) => setIdentifier(e.target.value)}
-            />
-          </Field>
-          {register && (
-            <Field label="City / area">
-              <select
+              </Field>
+            )}
+            {register && (
+              <Field label="Username">
+                <div className="auth-username-shell">
+                  <input
+                    required
+                    minLength={3}
+                    maxLength={24}
+                    pattern="[a-zA-Z0-9_-]{3,24}"
+                    className="auth-username-input"
+                    placeholder="yourname"
+                    value={username}
+                    onChange={(e) => setUsername(e.target.value.toLowerCase().replace(/[^a-z0-9_-]/g, ""))}
+                  />
+                  <span>.gwl</span>
+                </div>
+                <span className="mt-1 block text-[10px] text-slate-500">
+                  3–24 letters, numbers, underscores, or hyphens.
+                </span>
+              </Field>
+            )}
+            <Field label={register ? "Email address" : "Username or email"}>
+              <input
+                required
+                type={register ? "email" : "text"}
                 className="input"
-                value={city}
-                onChange={(e) => setCity(e.target.value)}
-              >
-                <option>City Centre</option>
-                <option>Lashkar</option>
-                <option>Thatipur</option>
-                <option>Morar</option>
-                <option>Hazira</option>
-                <option>Outside Gwalior</option>
-              </select>
+                placeholder={register ? "you@example.com" : "yourname.gwl"}
+                value={identifier}
+                onChange={(e) => setIdentifier(e.target.value)}
+              />
             </Field>
-          )}
-          <Field label="Password">
-            <input
-              required
-              type="password"
-              className="input"
-              placeholder="At least 6 characters"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-            />
-          </Field>
-          {error && (
-            <p className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
-              {error}
-            </p>
-          )}
-          <Button type="submit" className="w-full py-3" disabled={loading}>
-            {loading ? "Please wait..." : register ? "Create account" : "Log in"}
-          </Button>
-        </form>
-        <p className="mt-5 text-center text-xs text-slate-500">
-          {register ? "Already a member?" : "New to GwaliorWale?"}{" "}
-          <button
-            onClick={() => go(register ? "/login" : "/register")}
-            className="font-extrabold text-blue-600"
-          >
-            {register ? "Log in" : "Join now"}
-          </button>
-        </p>
+            {register && (
+              <Field label="City / area">
+                <select
+                  className="input"
+                  value={city}
+                  onChange={(e) => setCity(e.target.value)}
+                >
+                  <option>City Centre</option>
+                  <option>Lashkar</option>
+                  <option>Thatipur</option>
+                  <option>Morar</option>
+                  <option>Hazira</option>
+                  <option>Outside Gwalior</option>
+                </select>
+              </Field>
+            )}
+            <Field label="Password">
+              <input
+                required
+                type="password"
+                className="input"
+                placeholder="At least 6 characters"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+              />
+            </Field>
+            {error && (
+              <p className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+                {error}
+              </p>
+            )}
+            <Button type="submit" className="w-full py-3" disabled={loading}>
+              {loading ? "Please wait..." : register ? "Create account" : "Log in"}
+            </Button>
+          </form>
+
+          <div className="auth-footer">
+            <span></span>
+            <p>{register ? "Already a member?" : "New to GwaliorWale?"}</p>
+            <button
+              onClick={() => go(register ? "/login" : "/register")}
+              className="font-extrabold text-blue-600"
+            >
+              {register ? "Log in" : "Join now"}
+            </button>
+          </div>
+        </section>
       </div>
     </main>
   )
@@ -4817,9 +4870,15 @@ function NotificationsPage() {
 function CreatePostPage({
   loggedIn,
   profile,
+  modal = false,
+  onClose,
+  onPublished,
 }: {
   loggedIn: boolean
   profile: UserIdentity | null
+  modal?: boolean
+  onClose?: () => void
+  onPublished?: () => void
 }) {
   const [type, setType] = useState("Text")
   const [postKind, setPostKind] = useState<"Post" | "Discussion">("Post")
@@ -4836,6 +4895,56 @@ function CreatePostPage({
   const [published, setPublished] = useState(false)
   const [error, setError] = useState("")
   const [submitting, setSubmitting] = useState(false)
+  const [modalClosing, setModalClosing] = useState(false)
+  const requestClose = () => {
+    if (!modal) {
+      go("/community")
+      return
+    }
+    if (!modalClosing) setModalClosing(true)
+  }
+  const wrapContent = (content: ReactNode): ReactNode => {
+    if (!modal) return content
+    return createPortal(
+      <div
+        className={`post-detail-comments-backdrop create-post-modal-backdrop${modalClosing ? " is-closing" : ""}`}
+        onClick={requestClose}
+        onAnimationEnd={(event) => {
+          if (event.target === event.currentTarget && modalClosing) onClose?.()
+        }}
+      >
+        <section
+          className={`post-detail-comments create-post-modal${modalClosing ? " is-closing" : ""}`}
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="create-post-modal-title"
+          onClick={(event) => event.stopPropagation()}
+        >
+          <div className="post-detail-comments-heading">
+            <h2 id="create-post-modal-title">Create a post</h2>
+            <button type="button" onClick={requestClose} aria-label="Close create post"><Icon name="close" size={18} /></button>
+          </div>
+          <div className="create-post-modal-body">{content}</div>
+        </section>
+      </div>,
+      document.body,
+    )
+  }
+
+  useEffect(() => {
+    if (!modal) return
+    const previousOverflow = document.body.style.overflow
+    document.body.style.overflow = "hidden"
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setModalClosing(true)
+    }
+    window.addEventListener("keydown", closeOnEscape)
+    return () => {
+      document.body.style.overflow = previousOverflow
+      window.removeEventListener("keydown", closeOnEscape)
+    }
+  }, [modal])
+
   const locationOptions = [...new Set([
     "All Gwalior",
     profile?.city?.trim(),
@@ -4936,6 +5045,7 @@ function CreatePostPage({
       const nextPosts = [newPost, ...posts]
       posts = nextPosts
       writeStoredPosts(nextPosts)
+      onPublished?.()
       setPublished(true)
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to publish this post right now.")
@@ -4945,7 +5055,7 @@ function CreatePostPage({
   }
 
   if (!loggedIn) {
-    return (
+    return wrapContent(
       <main className="section max-w-[700px]">
         <EmptyState
           title="Login required"
@@ -4958,7 +5068,7 @@ function CreatePostPage({
   }
 
   if (!profile) {
-    return (
+    return wrapContent(
       <main className="section max-w-[700px]">
         <p className="text-sm text-slate-500">Loading your account profile...</p>
       </main>
@@ -4966,29 +5076,29 @@ function CreatePostPage({
   }
 
   if (published)
-    return (
+    return wrapContent(
       <main className="section max-w-[700px]">
         <EmptyState
           title="Your post is live!"
           text="The GwaliorWale community can now join your conversation."
           action="View community"
-          onAction={() => go("/community")}
+          onAction={requestClose}
           success
         />
       </main>
     )
 
-  return (
+  return wrapContent(
     <div className="create-post-page">
-      <PageHero
+      {!modal && <PageHero
         eyebrow="Start a conversation"
         title="Create a post"
         description="Ask, recommend, share or start something useful for Gwalior."
-      />
-      <div className="create-post-mobile-heading">
+      />}
+      {!modal && <div className="create-post-mobile-heading">
         <h1>Create a post</h1>
         <p>Share something useful with Gwalior.</p>
-      </div>
+      </div>}
       <main className="create-post-main section max-w-[760px]">
         <div className="create-post-card card p-5 sm:p-7">
           <div className="create-post-author flex gap-3">
@@ -5163,7 +5273,7 @@ function CreatePostPage({
             </p>
           )}
           <div className="create-post-submit-bar mt-6 flex justify-end gap-2">
-            <Button variant="outline" onClick={() => go("/community")}>
+            <Button variant="outline" onClick={requestClose}>
               Cancel
             </Button>
             <Button
@@ -5452,8 +5562,8 @@ export default function App() {
     if (!path.startsWith("/post/") && appContentRef.current) appContentRef.current.scrollTop = 0
   }, [path])
   let page: ReactNode
-  if (path === "/") page = <HomePage profile={currentProfile} />
-  else if (path === "/community") page = <CommunityPage profile={currentProfile} />
+  if (path === "/") page = <HomePage profile={currentProfile} loggedIn={loggedIn} />
+  else if (path === "/community") page = <CommunityPage profile={currentProfile} loggedIn={loggedIn} />
   else if (path === "/trending") page = <TrendingPage key={window.location.search} />
   else if (path.startsWith("/post/")) {
     const requestedReturnPath = new URLSearchParams(window.location.search).get("from")

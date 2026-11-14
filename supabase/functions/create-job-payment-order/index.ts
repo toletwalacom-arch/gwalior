@@ -26,7 +26,7 @@ Deno.serve(async (request: Request) => {
   const authorization = request.headers.get("Authorization")
   if (!authorization) return respond({ error: "Sign in to post a job." }, 401)
 
-  let body: { job?: Record<string, unknown>; days?: unknown }
+  let body: { job?: Record<string, unknown>; days?: unknown; renewal_job_id?: unknown }
   try {
     body = await request.json()
   } catch {
@@ -34,25 +34,13 @@ Deno.serve(async (request: Request) => {
   }
 
   const days = body.days
-  const source = body.job
-  if (!source || typeof source !== "object" || !Number.isInteger(days) || Number(days) < 1 || Number(days) > 365) {
-    return respond({ error: "Choose a listing duration from 1 to 365 days." }, 400)
-  }
-
-  const title = cleanText(source.title, 3, 100)
-  const company = cleanText(source.company, 2, 100)
-  const location = cleanText(source.location, 2, 100)
-  const salary = cleanText(source.salary ?? "", 0, 100)
-  const description = cleanText(source.description, 20, 5000)
-  const requirements = cleanText(source.requirements ?? "", 0, 3000)
-  const employmentTypes = ["Full-time", "Part-time", "Contract", "Internship", "Freelance"]
-  const workplaceTypes = ["On-site", "Hybrid", "Remote"]
+  const renewalJobId = typeof body.renewal_job_id === "string" ? body.renewal_job_id : null
+  const isRenewal = renewalJobId !== null
   if (
-    !title || !company || !location || salary === null || !description || requirements === null ||
-    typeof source.employment_type !== "string" || !employmentTypes.includes(source.employment_type) ||
-    typeof source.workplace_type !== "string" || !workplaceTypes.includes(source.workplace_type)
+    !Number.isInteger(days) || Number(days) < 1 || Number(days) > 365 ||
+    (isRenewal ? body.job !== undefined : !body.job || typeof body.job !== "object")
   ) {
-    return respond({ error: "Please check the job details and try again." }, 400)
+    return respond({ error: "Choose a listing duration from 1 to 365 days." }, 400)
   }
 
   const supabaseUrl = Deno.env.get("SUPABASE_URL")
@@ -72,6 +60,51 @@ Deno.serve(async (request: Request) => {
   const { data: userData, error: userError } = await userClient.auth.getUser()
   if (userError || !userData.user) return respond({ error: "Your session has expired. Sign in again." }, 401)
 
+  const adminClient = createClient(supabaseUrl, serviceRoleKey, {
+    auth: { autoRefreshToken: false, persistSession: false },
+  })
+  let source = body.job
+  if (isRenewal) {
+    if (!/^[\da-f]{8}-[\da-f]{4}-[1-8][\da-f]{3}-[89ab][\da-f]{3}-[\da-f]{12}$/i.test(renewalJobId)) {
+      return respond({ error: "Invalid job listing to renew." }, 400)
+    }
+    const { data: existingJob, error: jobError } = await adminClient
+      .from("job_listings")
+      .select("id, owner_id, title, company, location, employment_type, workplace_type, salary, description, requirements, status, expires_at")
+      .eq("id", renewalJobId)
+      .eq("owner_id", userData.user.id)
+      .maybeSingle()
+    if (jobError) {
+      console.error("Could not load job for renewal:", jobError.message)
+      return respond({ error: "Could not load this job listing. Please try again." }, 500)
+    }
+    if (!existingJob) return respond({ error: "This job listing was not found for your account." }, 404)
+    if (!existingJob.expires_at || Date.parse(existingJob.expires_at) > Date.now()) {
+      return respond({ error: "Only an expired job listing can be renewed." }, 409)
+    }
+    source = existingJob
+  }
+
+  if (!source || typeof source !== "object") {
+    return respond({ error: "Invalid job details." }, 400)
+  }
+
+  const title = cleanText(source.title, 3, 100)
+  const company = cleanText(source.company, 2, 100)
+  const location = cleanText(source.location, 2, 100)
+  const salary = cleanText(source.salary ?? "", 0, 100)
+  const description = cleanText(source.description, 20, 5000)
+  const requirements = cleanText(source.requirements ?? "", 0, 3000)
+  const employmentTypes = ["Full-time", "Part-time", "Contract", "Internship", "Freelance"]
+  const workplaceTypes = ["On-site", "Hybrid", "Remote"]
+  if (
+    !title || !company || !location || salary === null || !description || requirements === null ||
+    typeof source.employment_type !== "string" || !employmentTypes.includes(source.employment_type) ||
+    typeof source.workplace_type !== "string" || !workplaceTypes.includes(source.workplace_type)
+  ) {
+    return respond({ error: "Please check the job details and try again." }, 400)
+  }
+
   const amount = Number(days) * 1000
   const receipt = crypto.randomUUID()
   let razorpayOrder: { id?: string; amount?: number; currency?: string }
@@ -86,7 +119,11 @@ Deno.serve(async (request: Request) => {
         amount,
         currency: "INR",
         receipt,
-        notes: { user_id: userData.user.id, listing_days: String(days) },
+        notes: {
+          user_id: userData.user.id,
+          listing_days: String(days),
+          ...(renewalJobId ? { renewal_job_id: renewalJobId } : {}),
+        },
       }),
     })
     if (!razorpayResponse.ok) {
@@ -105,9 +142,6 @@ Deno.serve(async (request: Request) => {
   }
   if (!razorpayOrder.id) return respond({ error: "Razorpay did not return a valid order." }, 502)
 
-  const adminClient = createClient(supabaseUrl, serviceRoleKey, {
-    auth: { autoRefreshToken: false, persistSession: false },
-  })
   const { error: saveError } = await adminClient.from("job_payment_orders").insert({
     order_id: razorpayOrder.id,
     user_id: userData.user.id,
@@ -121,6 +155,7 @@ Deno.serve(async (request: Request) => {
     requirements,
     days,
     amount_paise: amount,
+    renewal_job_id: renewalJobId,
   })
   if (saveError) {
     console.error("Could not save pending job payment:", saveError.message)
